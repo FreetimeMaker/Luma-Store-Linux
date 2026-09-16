@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 import json
+import os
+import re
 import threading
 import urllib.parse
 import urllib.request
+from pathlib import Path
 
 import gi
 
@@ -11,6 +14,7 @@ from gi.repository import Gtk, Gio, GLib
 
 API_BASE = "https://api.free-time.me/v2/lumastore"
 PLATFORM = "linux"
+APPIMAGE_DIR = Path.home() / ".local" / "bin" / "luma-store-appimages"
 
 
 class LumaApi:
@@ -88,10 +92,17 @@ class LumaStoreWindow(Gtk.ApplicationWindow):
         self.details_summary = Gtk.Label(xalign=0, wrap=True)
         self.details_meta = Gtk.Label(xalign=0, wrap=True)
         self.details_download = Gtk.Label(xalign=0, selectable=True, wrap=True)
+        self.install_button = Gtk.Button(label="Install AppImage")
+        self.install_button.set_halign(Gtk.Align.START)
+        self.install_button.get_style_context().add_class("suggested-action")
+        self.install_button.connect("clicked", self.install_current_app)
+        self.install_status = Gtk.Label(xalign=0, wrap=True)
         details.pack_start(self.details_title, False, False, 0)
         details.pack_start(self.details_summary, False, False, 0)
         details.pack_start(self.details_meta, False, False, 0)
         details.pack_start(self.details_download, False, False, 0)
+        details.pack_start(self.install_button, False, False, 0)
+        details.pack_start(self.install_status, False, False, 0)
 
         self.stack.add_named(self.discover, "discover")
         self.stack.add_named(search_page, "search")
@@ -236,8 +247,55 @@ class LumaStoreWindow(Gtk.ApplicationWindow):
         if size is not None:
             meta += f"  •  {size} MB"
         self.details_meta.set_text(meta)
-        self.details_download.set_text(f"Download: {app.get('download_url') or 'No Linux download available'}")
+        download_url = app.get("download_url") or ""
+        self.details_download.set_text(f"Download: {download_url or 'No Linux download available'}")
+        is_appimage = ".appimage" in download_url.lower()
+        self.install_button.set_visible(is_appimage)
+        self.install_button.set_sensitive(is_appimage)
+        self.install_status.set_text("" if is_appimage else ("No AppImage available for this app." if download_url else "No Linux download available."))
         self.show_page("details")
+        return False
+
+    def install_current_app(self, _button):
+        app = self.current_app or {}
+        url = app.get("download_url") or ""
+        if ".appimage" not in url.lower():
+            self.install_status.set_text("This Linux download is not an AppImage.")
+            return
+        self.install_button.set_sensitive(False)
+        self.install_status.set_text("Downloading AppImage…")
+        threading.Thread(target=self._install_appimage_worker, args=(app, url), daemon=True).start()
+
+    def _install_appimage_worker(self, app, url):
+        try:
+            APPIMAGE_DIR.mkdir(parents=True, exist_ok=True)
+            parsed_name = Path(urllib.parse.urlparse(url).path).name
+            safe_app_name = re.sub(r"[^A-Za-z0-9._-]+", "-", app.get("name") or "app").strip("-") or "app"
+            filename = parsed_name if parsed_name.lower().endswith(".appimage") else f"{safe_app_name}.AppImage"
+            destination = APPIMAGE_DIR / filename
+            temporary = destination.with_suffix(destination.suffix + ".part")
+            request = urllib.request.Request(url, headers={"User-Agent": "Luma-Store-Linux/0.1"})
+            with urllib.request.urlopen(request, timeout=60) as response, open(temporary, "wb") as output:
+                while True:
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    output.write(chunk)
+            temporary.replace(destination)
+            os.chmod(destination, 0o755)
+            GLib.idle_add(self._install_finished, str(destination))
+        except Exception as error:
+            GLib.idle_add(self._install_failed, str(error))
+
+    def _install_finished(self, destination):
+        self.install_status.set_text(f"Installed AppImage to {destination}")
+        self.install_button.set_label("Reinstall AppImage")
+        self.install_button.set_sensitive(True)
+        return False
+
+    def _install_failed(self, message):
+        self.install_status.set_text(f"Installation failed: {message}")
+        self.install_button.set_sensitive(True)
         return False
 
 

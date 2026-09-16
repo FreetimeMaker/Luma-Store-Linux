@@ -3,9 +3,7 @@
 package = store_0.1.0_amd64
 
 install:
-	mkdir -p /opt/store
 	mkdir -p /usr/share/icons/hicolor/256x256/apps
-	cp store.png /opt/store/
 	cp store.png /usr/share/icons/hicolor/256x256/apps/
 	cp store.desktop /usr/share/applications/
 	cp store.py /usr/local/bin/store
@@ -19,12 +17,10 @@ uninstall:
 
 deb:
 	mkdir -p $(package)/usr/local/bin/
-	mkdir -p $(package)/opt/store/
 	mkdir -p $(package)/usr/share/icons/hicolor/256x256/apps/
 	mkdir -p $(package)/usr/share/applications/
 	cp store.py $(package)/usr/local/bin/store
 	chmod +x $(package)/usr/local/bin/store
-	cp store.png $(package)/opt/store/
 	cp store.png $(package)/usr/share/icons/hicolor/256x256/apps/
 	cp store.desktop $(package)/usr/share/applications/
 	dpkg-deb --build --root-owner-group $(package)

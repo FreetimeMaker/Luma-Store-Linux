@@ -27,7 +27,7 @@ deb:
 
 rpm:
 	mkdir -p rpmbuild/SOURCES
-	cp store.py xmrig store.png store.desktop rpmbuild/SOURCES/
+	cp store.py store.png store.desktop rpmbuild/SOURCES/
 	rpmbuild -bb --define "_topdir $(shell pwd)/rpmbuild" store.spec
 	cp rpmbuild/RPMS/x86_64/*.rpm .
 	rm -rf rpmbuild

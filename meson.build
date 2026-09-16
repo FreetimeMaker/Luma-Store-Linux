@@ -1,12 +1,11 @@
-project('luma-store', 'c', version: '0.1.0', default_options: ['warning_level=2', 'c_std=c11'])
+project('luma-store-linux', version: '0.1.0')
 
-gtk = dependency('gtk+-3.0', version: '>=3.24')
+python = import('python').find_installation('python3')
 
-executable(
-  'luma-store',
-  'src/main.c',
-  dependencies: gtk,
-  install: true,
+install_data(
+  'src/main.py',
+  install_dir: get_option('bindir'),
+  rename: 'luma-store'
 )
 
 install_data(

@@ -9,6 +9,6 @@ install_data(
 )
 
 install_data(
-  'data/com.freetime.LumaStore.desktop',
+  'data/com.freetime.lumastore.desktop',
   install_dir: join_paths(get_option('datadir'), 'applications')
 )

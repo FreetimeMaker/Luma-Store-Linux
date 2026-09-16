@@ -243,7 +243,7 @@ class LumaStoreWindow(Gtk.ApplicationWindow):
 
 class LumaStore(Gtk.Application):
     def __init__(self):
-        super().__init__(application_id="com.freetime.LumaStore", flags=Gio.ApplicationFlags.FLAGS_NONE)
+        super().__init__(application_id="com.freetime.lumastore", flags=Gio.ApplicationFlags.FLAGS_NONE)
 
     def do_activate(self):
         window = self.props.active_window or LumaStoreWindow(self)

@@ -1,4 +1,4 @@
-Package: Luma Store
+Package: store
 Source: store
 Version: 0.1.0
 Architecture: amd64

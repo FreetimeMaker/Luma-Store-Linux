@@ -9,7 +9,7 @@ Source0:        store.py
 Source2:        store.png
 Source3:        store.desktop
 
-Requires:       python3
+Requires:       python3, python3-gobject, gtk3
 
 %description
 The Linux Version of Luma Store.

@@ -349,16 +349,10 @@ class LumaStoreWindow(Gtk.ApplicationWindow):
 
         fmt = package_format.lower()
         url_lower = download_url.lower()
-        is_appimage = fmt == "appimage" or ".appimage" in url_lower
         is_deb = fmt == "deb" or fmt == "debian" or ".deb" in url_lower
         is_rpm = fmt == "rpm" or ".rpm" in url_lower
 
-        if is_appimage:
-            self.install_button.set_label("Install AppImage")
-            self.install_button.set_visible(True)
-            self.install_button.set_sensitive(True)
-            self.install_status.set_text("")
-        elif is_deb:
+        if is_deb:
             self.install_button.set_label("Install DEB Package")
             self.install_button.set_visible(True)
             self.install_button.set_sensitive(True)
@@ -382,46 +376,21 @@ class LumaStoreWindow(Gtk.ApplicationWindow):
 
         fmt = package_format.lower()
         url_lower = url.lower()
-        is_appimage = fmt == "appimage" or ".appimage" in url_lower
         is_deb = fmt == "deb" or fmt == "debian" or ".deb" in url_lower
         is_rpm = fmt == "rpm" or ".rpm" in url_lower
 
-        if not (is_appimage or is_deb or is_rpm):
+        if not (is_deb or is_rpm):
             self.install_status.set_text("Unsupported package format.")
             return
 
         self.install_button.set_sensitive(False)
-        if is_appimage:
-            self.install_status.set_text("Downloading AppImage…")
-            threading.Thread(target=self._install_appimage_worker, args=(app, url), daemon=True).start()
-        elif is_deb:
+        if is_deb:
             self.install_status.set_text("Downloading DEB Package…")
             threading.Thread(target=self._install_native_package_worker, args=(app, url, "deb"), daemon=True).start()
         elif is_rpm:
             self.install_status.set_text("Downloading RPM Package…")
             threading.Thread(target=self._install_native_package_worker, args=(app, url, "rpm"), daemon=True).start()
 
-    def _install_appimage_worker(self, app, url):
-        try:
-            target_dir = Path.home() / "Downloads"
-            target_dir.mkdir(parents=True, exist_ok=True)
-            parsed_name = Path(urllib.parse.urlparse(url).path).name
-            safe_app_name = re.sub(r"[^A-Za-z0-9._-]+", "-", app.get("name") or "app").strip("-") or "app"
-            filename = parsed_name if parsed_name.lower().endswith(".appimage") else f"{safe_app_name}.AppImage"
-            destination = target_dir / filename
-            temporary = destination.with_suffix(destination.suffix + ".part")
-            request = urllib.request.Request(url, headers={"User-Agent": "Luma-Store-Linux/0.1"})
-            with urllib.request.urlopen(request, timeout=60) as response, open(temporary, "wb") as output:
-                while True:
-                    chunk = response.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    output.write(chunk)
-            temporary.replace(destination)
-            os.chmod(destination, 0o755)
-            GLib.idle_add(self._install_finished, str(destination))
-        except Exception as error:
-            GLib.idle_add(self._install_failed, str(error))
 
     def _install_native_package_worker(self, app, url, pkg_type):
         try:
@@ -460,8 +429,7 @@ class LumaStoreWindow(Gtk.ApplicationWindow):
         return False
 
     def _install_finished(self, destination):
-        self.install_status.set_text(f"Installed AppImage to {destination}")
-        self.install_button.set_label("Reinstall AppImage")
+        self.install_status.set_text(f"Downloaded package to {destination}")
         self.install_button.set_sensitive(True)
         return False
 

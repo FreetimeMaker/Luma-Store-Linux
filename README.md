@@ -1,17 +1,94 @@
 # Luma Store Linux
 
-Native GTK3 edition of **Luma Store** for Linux.
+Luma Store Linux is a free and open-source desktop client store for the Luma Store API, tailored specifically for Linux systems. It provides a modern, high-performance user interface to easily browse, search, and manage native Linux applications.
 
-## Current features
+Built with **Python 3** and **GTK 3**.
 
-- Native GTK3 interface
-- Discover page with app cards
-- App details page
-- Search page shell
-- Categories page
-- Linux desktop entry
-- Meson build system
+![Preview of Luma Store](preview.png)
 
-## Next steps
+## Features
 
-The current UI is ready to be connected to the real Luma Store API/Supabase backend. Installation handling can then support Linux package formats such as Flatpak and AppImage.
+### Supported Formats
+*   **DEB Packages:** Downloads Debian `.deb` packages directly to your system's `~/Downloads` folder and triggers your standard default package installer (e.g., Ubuntu Software, GDebi).
+*   **RPM Packages:** Downloads Red Hat `.rpm` packages to `~/Downloads` and integrates seamlessly with your standard package management utility (e.g., Fedora Software, Discover).
+
+### Key Capabilities
+*   **App Discovery & Search:** Instantly loads available software from the API feed and features a live search activation view.
+*   **Dynamic Category Navigation:** Simple filtering using computed category indices directly from the server feed, with an interactive reset selector to view all applications.
+*   **Rich Dynamic Information:** Renders application icons, descriptions, versions, file sizes, and automatically parses any additional structural keys provided by the API backend.
+*   **Screenshots Showcase:** Embedded horizontal gallery view displaying app screenshots dynamically.
+*   **Asynchronous Background Threads:** Avoids blocking or freezing the store's interface by offloading downloads and image assets processing onto isolated worker threads.
+
+## Installation
+
+### Linux
+
+#### Debian / Ubuntu (APT)
+1. Use the APT Repository setup:
+
+```bash
+sudo nano /etc/apt/sources.list.d/Freetime-Repo.list
+```
+
+then add:
+```text
+deb [trusted=yes arch=amd64] https://apt.fury.io/freetimemaker/ /
+```
+
+then run:
+```bash
+sudo apt update
+sudo apt install store
+```
+
+#### Fedora / Red Hat (RPM)
+1. Use the YUM Repository setup:
+
+```bash
+sudo nano /etc/yum.repos.d/freetime.repo
+```
+
+then add:
+```text
+[freetimemaker]
+name=Freetime Repo
+baseurl=https://yum.fury.io/freetimemaker/
+enabled=1
+gpgcheck=0
+```
+
+then run:
+```bash
+sudo dnf install store -y --refresh
+```
+
+## Makefile Commands
+
+If you want to build Luma Store Linux from source, ensure you have the following packages installed:
+* `python3`
+* `gtk3`
+* `pygobject`
+<br>
+<br>
+
+Install locally:
+
+`sudo make install`
+
+or if you want to bundle a Debian package:
+
+`make deb`
+
+or for the Red Hat RPM package:
+
+`make rpm`
+<br>
+<br>
+
+## Contribute
+
+### Development
+Pull requests and bug reports are welcome on the repository.
+
+---
+**Disclaimer**: Installing applications handles code packages over remote integration. Always verify the source packages you install. Use at your own risk.

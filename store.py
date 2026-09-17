@@ -58,7 +58,10 @@ class LumaStoreWindow(Gtk.ApplicationWindow):
         root.pack_start(self.stack, True, True, 0)
         for label, page in (("Discover", "discover"), ("Search", "search"), ("Categories", "categories")):
             button = Gtk.Button(label=label)
-            button.connect("clicked", lambda _b, name=page: self.show_page(name))
+            if page == "discover":
+                button.connect("clicked", lambda _b: self.reset_and_show_discover())
+            else:
+                button.connect("clicked", lambda _b, name=page: self.show_page(name))
             nav.pack_start(button, False, False, 0)
 
         self.discover = self.page_box()
@@ -247,6 +250,14 @@ class LumaStoreWindow(Gtk.ApplicationWindow):
             button.connect("clicked", self.show_category, category)
             self.categories_box.pack_start(button, False, False, 0)
         self.categories_box.show_all()
+
+    def reset_and_show_discover(self):
+        self.clear(self.discover_list)
+        for app in self.apps:
+            self.discover_list.add(self.app_row(app))
+        self.discover_status.set_text(f"{len(self.apps)} Linux app(s) available.")
+        self.discover_list.show_all()
+        self.show_page("discover")
 
     def show_category(self, _button, category):
         self.clear(self.discover_list)

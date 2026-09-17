@@ -1,6 +1,6 @@
 .PHONY: install uninstall deb rpm
 
-package = store_1.0.0_amd64
+package = store_1.0.1_amd64
 
 install:
 	mkdir -p /usr/share/icons/hicolor/256x256/apps

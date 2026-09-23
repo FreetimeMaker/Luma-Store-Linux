@@ -4,6 +4,7 @@ import json
 import os
 import re
 import threading
+import urllib.error
 import urllib.parse
 import urllib.request
 import webbrowser
@@ -23,6 +24,7 @@ APPIMAGE_DIR = Path.home() / ".local" / "bin" / "luma-store-appimages"
 SUPABASE_URL = "https://ndlaevedujqxhygbyxfh.supabase.co"
 SUPABASE_PUBLISHABLE_KEY = "sb_publishable_HlppI4ILiXV7DZkpyrDEhQ_ytb2vV6g"
 SESSION_FILE = Path.home() / ".config" / "luma-store" / "session.json"
+DASHBOARD_API_BASE = "https://luma.free-time.me/api/luma"
 
 
 class LumaApi:
@@ -160,6 +162,10 @@ class NativeSupabaseAuth:
         metadata = user.get("app_metadata") or {}
         return metadata.get("provider") or "OAuth"
 
+    def provider_token(self):
+        session = self.session()
+        return getattr(session, "provider_token", None) if session else None
+
     def login(self, provider):
         result = {"code": None, "error": None}
 
@@ -246,6 +252,44 @@ class DeveloperDashboardApi:
             .execute()
         )
         return response.data or []
+
+    def submit_linux_app(self, submission):
+        access_token = self.auth.access_token()
+        provider_token = self.auth.provider_token()
+        if not access_token:
+            raise RuntimeError("Your Luma Store session expired. Sign in again.")
+        if not provider_token:
+            raise RuntimeError("GitHub authorization is required. Sign out and sign in with GitHub again.")
+
+        payload = json.dumps({"submission": submission}).encode("utf-8")
+        request = urllib.request.Request(
+            f"{DASHBOARD_API_BASE}/submissions",
+            data=payload,
+            method="POST",
+            headers={
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {access_token}",
+                "X-GitHub-Token": provider_token,
+                "User-Agent": "Luma-Store-Linux/1.1",
+            },
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=45) as response:
+                body = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as error:
+            raw = error.read().decode("utf-8", errors="replace")
+            try:
+                body = json.loads(raw)
+                message = body.get("error") or body.get("message") or raw
+            except Exception:
+                message = raw
+            raise RuntimeError(message or f"Submission failed with HTTP {error.code}") from error
+
+        saved = body.get("submission") if isinstance(body, dict) else None
+        if not saved:
+            raise RuntimeError("Submission could not be saved.")
+        return saved
 
 
 class LumaStoreWindow(Gtk.ApplicationWindow):
@@ -353,6 +397,90 @@ class LumaStoreWindow(Gtk.ApplicationWindow):
         self.dashboard_stats = Gtk.Label(label="No dashboard data loaded yet.", xalign=0, wrap=True)
         self.dashboard_stats.get_style_context().add_class("dashboard-stats")
         self.dashboard.pack_start(self.dashboard_stats, False, False, 0)
+
+        self.submit_expander = Gtk.Expander(label="New Linux app submission")
+        self.submit_expander.set_expanded(False)
+        submit_scrolled = Gtk.ScrolledWindow()
+        submit_scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        submit_scrolled.set_min_content_height(360)
+
+        submit_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        submit_box.set_border_width(14)
+        submit_box.get_style_context().add_class("glass-card")
+        submit_intro = Gtk.Label(
+            label="Create a Linux submission natively. Final submissions require GitHub login so Luma Store can verify repository ownership.",
+            xalign=0,
+            wrap=True,
+        )
+        submit_intro.get_style_context().add_class("muted")
+        submit_box.pack_start(submit_intro, False, False, 0)
+
+        submit_grid = Gtk.Grid(column_spacing=12, row_spacing=10)
+        submit_box.pack_start(submit_grid, False, False, 0)
+        self.submit_fields = {}
+        self.submit_textviews = {}
+
+        def add_entry(row, key, title, placeholder=""):
+            label = Gtk.Label(label=title, xalign=0)
+            entry = Gtk.Entry()
+            entry.set_hexpand(True)
+            entry.set_placeholder_text(placeholder)
+            submit_grid.attach(label, 0, row, 1, 1)
+            submit_grid.attach(entry, 1, row, 1, 1)
+            self.submit_fields[key] = entry
+            return row + 1
+
+        def add_text_area(row, key, title, height=76):
+            label = Gtk.Label(label=title, xalign=0)
+            label.set_valign(Gtk.Align.START)
+            view = Gtk.TextView()
+            view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+            area = Gtk.ScrolledWindow()
+            area.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+            area.set_min_content_height(height)
+            area.add(view)
+            submit_grid.attach(label, 0, row, 1, 1)
+            submit_grid.attach(area, 1, row, 1, 1)
+            self.submit_textviews[key] = view
+            return row + 1
+
+        row = 0
+        row = add_entry(row, "name", "Title", "My Linux app")
+        row = add_entry(row, "repo_url", "GitHub repository", "https://github.com/owner/repository")
+        row = add_entry(row, "categories", "Categories", "Development, System")
+        row = add_entry(row, "license_type", "Open-source license", "GPL-3.0-only")
+        row = add_entry(row, "version", "Version", "1.0.0")
+        row = add_entry(row, "icon_url", "Icon URL", "https://...")
+        row = add_entry(row, "deb_url", "DEB URL", "https://.../app.deb")
+        row = add_entry(row, "rpm_url", "RPM URL", "https://.../app.rpm")
+        row = add_text_area(row, "short_description", "Short description")
+        row = add_text_area(row, "description", "Full description", 110)
+        row = add_text_area(row, "changelog", "Changelog")
+        row = add_text_area(row, "screenshots", "Screenshot URLs (one per line)", 90)
+        row = add_entry(row, "author_name", "Author name")
+        row = add_entry(row, "author_email", "Author email")
+        row = add_entry(row, "author_website", "Author website", "https://...")
+        row = add_entry(row, "website_url", "App website", "https://...")
+        row = add_entry(row, "issue_tracker_url", "Issue tracker", "https://...")
+        row = add_entry(row, "translation_url", "Translation URL", "https://...")
+
+        submit_actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.submit_button = Gtk.Button(label="Submit Linux app")
+        self.submit_button.get_style_context().add_class("glass-primary")
+        self.submit_button.connect("clicked", self.submit_linux_app)
+        clear_submit_button = Gtk.Button(label="Clear")
+        clear_submit_button.connect("clicked", lambda _b: self.clear_submission_form())
+        submit_actions.pack_start(self.submit_button, False, False, 0)
+        submit_actions.pack_start(clear_submit_button, False, False, 0)
+        submit_box.pack_start(submit_actions, False, False, 0)
+
+        self.submit_status = Gtk.Label(xalign=0, wrap=True)
+        self.submit_status.get_style_context().add_class("muted")
+        submit_box.pack_start(self.submit_status, False, False, 0)
+
+        submit_scrolled.add(submit_box)
+        self.submit_expander.add(submit_scrolled)
+        self.dashboard.pack_start(self.submit_expander, False, False, 0)
 
         submissions_title = Gtk.Label(label="My submissions", xalign=0)
         submissions_title.get_style_context().add_class("section-title")
@@ -567,6 +695,7 @@ class LumaStoreWindow(Gtk.ApplicationWindow):
             self.dashboard_login_buttons.show()
             self.dashboard_session_actions.hide()
             self.dashboard_stats.set_text("Sign in to load your submissions.")
+            self.submit_button.set_sensitive(False)
             self.clear(self.dashboard_list)
             self.dashboard_list.show_all()
             return
@@ -585,10 +714,16 @@ class LumaStoreWindow(Gtk.ApplicationWindow):
             self.dashboard_auth_status.set_text(f"Signed in as {display_name} via {provider.title()}.")
             self.dashboard_login_buttons.hide()
             self.dashboard_session_actions.show()
+            self.submit_button.set_sensitive(bool(self.auth.provider_token()))
+            if not self.auth.provider_token():
+                self.submit_status.set_text("Viewing works with this session, but app submission requires GitHub login.")
+            else:
+                self.submit_status.set_text("")
         except Exception as error:
             self.dashboard_auth_status.set_text(f"Session error: {error}")
             self.dashboard_login_buttons.show()
             self.dashboard_session_actions.hide()
+            self.submit_button.set_sensitive(False)
 
     def start_dashboard_login(self, _button, provider):
         self.dashboard_auth_status.set_text(
@@ -621,6 +756,135 @@ class LumaStoreWindow(Gtk.ApplicationWindow):
     def dashboard_sign_out(self, _button):
         self.auth.sign_out()
         self.refresh_dashboard_state()
+
+    @staticmethod
+    def _text_view_value(view):
+        buffer = view.get_buffer()
+        start, end = buffer.get_bounds()
+        return buffer.get_text(start, end, True).strip()
+
+    def clear_submission_form(self):
+        for entry in self.submit_fields.values():
+            entry.set_text("")
+        for view in self.submit_textviews.values():
+            view.get_buffer().set_text("")
+        self.submit_status.set_text("")
+
+    def submit_linux_app(self, _button):
+        if not self.auth.access_token():
+            self.submit_status.set_text("Sign in before submitting an app.")
+            return
+        if not self.auth.provider_token():
+            self.submit_status.set_text("App submission requires GitHub login. Sign out and sign in with GitHub.")
+            return
+
+        fields = {key: entry.get_text().strip() for key, entry in self.submit_fields.items()}
+        texts = {key: self._text_view_value(view) for key, view in self.submit_textviews.items()}
+        categories = [value.strip() for value in fields["categories"].split(",") if value.strip()]
+        screenshots = [value.strip() for value in texts["screenshots"].splitlines() if value.strip()]
+
+        required = {
+            "Title": fields["name"],
+            "GitHub repository": fields["repo_url"],
+            "Category": categories[0] if categories else "",
+            "License": fields["license_type"],
+            "Version": fields["version"],
+            "Icon URL": fields["icon_url"],
+            "Short description": texts["short_description"],
+            "Full description": texts["description"],
+            "Changelog": texts["changelog"],
+            "Screenshot": screenshots[0] if screenshots else "",
+        }
+        missing = [label for label, value in required.items() if not value]
+        if missing:
+            self.submit_status.set_text("Missing required fields: " + ", ".join(missing))
+            return
+
+        if not re.match(r"^https://github\.com/[^/]+/[^/]+/?$", fields["repo_url"]):
+            self.submit_status.set_text("Repository must be a public GitHub repository URL.")
+            return
+
+        artifacts = []
+        if fields["deb_url"]:
+            artifacts.append({"platform": "Linux", "packageType": "deb", "downloadUrl": fields["deb_url"]})
+        if fields["rpm_url"]:
+            artifacts.append({"platform": "Linux", "packageType": "rpm", "downloadUrl": fields["rpm_url"]})
+        if not artifacts:
+            self.submit_status.set_text("Add at least one Linux download: DEB or RPM.")
+            return
+
+        metadata = {
+            "locale": "en-US",
+            "title": fields["name"],
+            "shortDescription": texts["short_description"],
+            "fullDescription": texts["description"],
+            "changelog": texts["changelog"],
+            "screenshots": screenshots,
+        }
+        submission = {
+            "name": fields["name"],
+            "short_description": texts["short_description"],
+            "description": texts["description"],
+            "link": fields["repo_url"],
+            "repo_url": fields["repo_url"],
+            "source_code_url": fields["repo_url"],
+            "category": categories[0],
+            "categories": categories,
+            "subcategory": None,
+            "license_type": fields["license_type"],
+            "closed_source": False,
+            "localized_metadata": [metadata],
+            "icon_url": fields["icon_url"],
+            "version": fields["version"],
+            "platform": "Linux",
+            "platforms": artifacts,
+            "separate_platform_repos": False,
+            "linux_package_base": None,
+            "download_url": artifacts[0]["downloadUrl"],
+            "changelog": texts["changelog"],
+            "package_name": None,
+            "version_code": None,
+            "screenshots": screenshots,
+            "website_url": fields["website_url"] or None,
+            "issue_tracker_url": fields["issue_tracker_url"] or None,
+            "translation_url": fields["translation_url"] or None,
+            "author_name": fields["author_name"] or None,
+            "author_email": fields["author_email"] or None,
+            "author_website": fields["author_website"] or None,
+        }
+
+        self.submit_button.set_sensitive(False)
+        self.submit_status.set_text("Submitting app…")
+        threading.Thread(
+            target=self._submit_linux_app_worker,
+            args=(submission,),
+            daemon=True,
+        ).start()
+
+    def _submit_linux_app_worker(self, submission):
+        try:
+            saved = self.dashboard_api.submit_linux_app(submission)
+            GLib.idle_add(self._submit_linux_app_done, saved)
+        except Exception as error:
+            GLib.idle_add(self._submit_linux_app_failed, str(error))
+
+    def _submit_linux_app_done(self, saved):
+        self.submit_button.set_sensitive(True)
+        self.submit_status.set_text(
+            f"Submitted {saved.get('name') or 'app'} successfully. Status: {saved.get('status') or 'Pending'}."
+        )
+        self.clear_submission_form()
+        self.submit_status.set_text(
+            f"Submitted {saved.get('name') or 'app'} successfully. Status: {saved.get('status') or 'Pending'}."
+        )
+        self.submit_expander.set_expanded(False)
+        self.load_dashboard_submissions()
+        return False
+
+    def _submit_linux_app_failed(self, message):
+        self.submit_button.set_sensitive(True)
+        self.submit_status.set_text(f"Submission failed: {message}")
+        return False
 
     def load_dashboard_submissions(self):
         if not self.auth.access_token():

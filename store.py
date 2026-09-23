@@ -2061,57 +2061,303 @@ class LumaStoreWindow(Gtk.ApplicationWindow):
         start, end = buffer.get_bounds()
         return buffer.get_text(start, end, True).strip()
 
+    @staticmethod
+    def _set_text_view(view, value):
+        view.get_buffer().set_text(str(value or ""))
+
     def clear_submission_form(self):
         for entry in self.submit_fields.values():
             entry.set_text("")
         for view in self.submit_textviews.values():
             view.get_buffer().set_text("")
+        for check in self.submit_platform_checks.values():
+            check.set_active(False)
+        self.submit_separate_repos.set_active(False)
+        for fields in self.submit_platform_fields.values():
+            for entry in fields.values():
+                entry.set_text("")
+        for views in self.submit_platform_textviews.values():
+            for view in views.values():
+                view.get_buffer().set_text("")
+        self.submit_draft_id = None
+        self.submit_editing_id = None
+        self.submit_editing_status = None
+        self.submit_existing_localized_metadata = []
         self.submit_status.set_text("")
+        self.submit_button.set_label("Submit app")
 
-    def submit_linux_app(self, _button):
-        if not self.auth.access_token():
-            self.submit_status.set_text("Sign in before submitting an app.")
-            return
-        if not self.auth.provider_token():
-            self.submit_status.set_text("App submission requires GitHub login. Sign out and sign in with GitHub.")
-            return
+    def _selected_submit_platforms(self):
+        return [
+            platform
+            for platform, check in self.submit_platform_checks.items()
+            if check.get_active()
+        ]
 
+    @staticmethod
+    def _submission_artifacts(value):
+        if not isinstance(value, list):
+            return []
+        result = []
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            platform = item.get("platform")
+            if platform not in ("Android", "Windows", "Linux"):
+                continue
+            package_type = item.get("packageType") or item.get("package_type")
+            download_url = item.get("downloadUrl") or item.get("download_url") or ""
+            result.append({
+                "platform": platform,
+                "packageType": package_type,
+                "downloadUrl": download_url,
+                "repoUrl": item.get("repoUrl") or item.get("repo_url") or "",
+                "metadata": item.get("metadata") if isinstance(item.get("metadata"), dict) else {},
+            })
+        return result
+
+    def edit_submission_in_form(self, submission):
+        self.clear_submission_form()
+        fields = self.submit_fields
+        textviews = self.submit_textviews
+
+        for key, source in (
+            ("name", "name"),
+            ("repo_url", "repo_url"),
+            ("license_type", "license_type"),
+            ("version", "version"),
+            ("icon_url", "icon_url"),
+            ("package_name", "package_name"),
+            ("author_name", "author_name"),
+            ("author_email", "author_email"),
+            ("author_website", "author_website"),
+            ("website_url", "website_url"),
+            ("issue_tracker_url", "issue_tracker_url"),
+            ("translation_url", "translation_url"),
+            ("changelog_url", "changelog_url"),
+        ):
+            fields[key].set_text(str(submission.get(source) or ""))
+
+        categories = submission.get("categories") or []
+        if not categories and submission.get("category"):
+            categories = [submission.get("category")]
+        fields["categories"].set_text(", ".join(str(value) for value in categories if value))
+        fields["version_code"].set_text(str(submission.get("version_code") or ""))
+
+        self._set_text_view(textviews["short_description"], submission.get("short_description"))
+        self._set_text_view(textviews["description"], submission.get("description"))
+        self._set_text_view(textviews["changelog"], submission.get("changelog"))
+        screenshots = submission.get("screenshots") or []
+        self._set_text_view(
+            textviews["screenshots"],
+            "\n".join(str(value) for value in screenshots if value),
+        )
+
+        artifacts = self._submission_artifacts(submission.get("platforms"))
+        selected = []
+        for artifact in artifacts:
+            platform = artifact["platform"]
+            if platform not in selected:
+                selected.append(platform)
+            package_type = artifact.get("packageType")
+            url = str(artifact.get("downloadUrl") or "")
+            if platform == "Android" and package_type == "apk":
+                fields["android_url"].set_text(url)
+            elif platform == "Windows" and package_type == "exe":
+                fields["windows_exe_url"].set_text(url)
+            elif platform == "Windows" and package_type == "msi":
+                fields["windows_msi_url"].set_text(url)
+            elif platform == "Linux" and package_type == "deb":
+                fields["deb_url"].set_text(url)
+            elif platform == "Linux" and package_type == "rpm":
+                fields["rpm_url"].set_text(url)
+
+            platform_fields = self.submit_platform_fields[platform]
+            platform_views = self.submit_platform_textviews[platform]
+            platform_fields["repo_url"].set_text(str(artifact.get("repoUrl") or ""))
+            metadata = artifact.get("metadata") or {}
+            platform_fields["title"].set_text(str(metadata.get("title") or submission.get("name") or ""))
+            self._set_text_view(platform_views["short_description"], metadata.get("shortDescription") or metadata.get("short_description"))
+            self._set_text_view(platform_views["description"], metadata.get("fullDescription") or metadata.get("full_description"))
+            self._set_text_view(platform_views["changelog"], metadata.get("changelog"))
+            self._set_text_view(platform_views["screenshots"], "\n".join(metadata.get("screenshots") or []))
+
+        if not selected and submission.get("platform") in self.submit_platform_checks:
+            selected = [submission.get("platform")]
+            legacy_url = str(submission.get("download_url") or "")
+            if submission.get("platform") == "Android":
+                fields["android_url"].set_text(legacy_url)
+            elif submission.get("platform") == "Windows":
+                fields["windows_exe_url"].set_text(legacy_url)
+            elif submission.get("platform") == "Linux":
+                if submission.get("linux_package_base") == "RPM-based":
+                    fields["rpm_url"].set_text(legacy_url)
+                else:
+                    fields["deb_url"].set_text(legacy_url)
+
+        for platform in selected:
+            if platform in self.submit_platform_checks:
+                self.submit_platform_checks[platform].set_active(True)
+
+        separate = bool(submission.get("separate_platform_repos")) or any(
+            artifact.get("repoUrl") or artifact.get("metadata")
+            for artifact in artifacts
+        )
+        self.submit_separate_repos.set_active(separate)
+        self.submit_existing_localized_metadata = list(submission.get("localized_metadata") or [])
+        self.submit_editing_id = submission.get("id")
+        self.submit_editing_status = submission.get("status")
+        self.submit_draft_id = submission.get("id") if submission.get("status") == "Draft" else None
+        self.submit_button.set_label(
+            "Submit update" if submission.get("status") == "Approved"
+            else "Resubmit changes" if submission.get("status") == "Changes Requested"
+            else "Submit app"
+        )
+        self.submit_expander.set_expanded(True)
+        self.show_page("dashboard")
+        self.submit_status.set_text(
+            f"Editing {submission.get('name') or 'submission'} · current status {submission.get('status') or 'Unknown'}"
+        )
+
+    def _platform_metadata_for_submission(self, platform, final):
+        fields = self.submit_platform_fields[platform]
+        views = self.submit_platform_textviews[platform]
+        screenshots = [
+            value.strip()
+            for value in self._text_view_value(views["screenshots"]).splitlines()
+            if value.strip()
+        ]
+        values = {
+            "repoUrl": fields["repo_url"].get_text().strip(),
+            "title": fields["title"].get_text().strip(),
+            "shortDescription": self._text_view_value(views["short_description"]),
+            "fullDescription": self._text_view_value(views["description"]),
+            "changelog": self._text_view_value(views["changelog"]),
+            "screenshots": screenshots,
+        }
+        if final:
+            missing = [
+                label for label, value in (
+                    ("repository URL", values["repoUrl"]),
+                    ("title", values["title"]),
+                    ("short description", values["shortDescription"]),
+                    ("full description", values["fullDescription"]),
+                    ("changelog", values["changelog"]),
+                    ("screenshots", values["screenshots"]),
+                )
+                if not value
+            ]
+            if missing:
+                raise RuntimeError(
+                    f"{platform} platform metadata is incomplete: " + ", ".join(missing)
+                )
+            if not re.match(r"^https://github\.com/[^/]+/[^/]+/?$", values["repoUrl"]):
+                raise RuntimeError(f"{platform} repository must be a public GitHub repository URL.")
+        return {
+            "repoUrl": values["repoUrl"],
+            "metadata": {
+                "title": values["title"],
+                "shortDescription": values["shortDescription"],
+                "fullDescription": values["fullDescription"],
+                "changelog": values["changelog"],
+                "screenshots": values["screenshots"],
+            },
+        }
+
+    def _build_submission_payload(self, final=True):
         fields = {key: entry.get_text().strip() for key, entry in self.submit_fields.items()}
         texts = {key: self._text_view_value(view) for key, view in self.submit_textviews.items()}
         categories = [value.strip() for value in fields["categories"].split(",") if value.strip()]
         screenshots = [value.strip() for value in texts["screenshots"].splitlines() if value.strip()]
+        platforms = self._selected_submit_platforms()
+        separate_repos = self.submit_separate_repos.get_active()
 
-        required = {
-            "Title": fields["name"],
-            "GitHub repository": fields["repo_url"],
-            "Category": categories[0] if categories else "",
-            "License": fields["license_type"],
-            "Version": fields["version"],
-            "Icon URL": fields["icon_url"],
-            "Short description": texts["short_description"],
-            "Full description": texts["description"],
-            "Changelog": texts["changelog"],
-            "Screenshot": screenshots[0] if screenshots else "",
-        }
-        missing = [label for label, value in required.items() if not value]
-        if missing:
-            self.submit_status.set_text("Missing required fields: " + ", ".join(missing))
-            return
+        if final:
+            required = {
+                "Title": fields["name"],
+                "Category": categories[0] if categories else "",
+                "Open-source license": fields["license_type"],
+                "Version": fields["version"],
+                "Icon URL": fields["icon_url"],
+                "Short description": texts["short_description"],
+                "Full description": texts["description"],
+                "Changelog": texts["changelog"],
+                "Screenshot": screenshots[0] if screenshots else "",
+                "Platform": platforms[0] if platforms else "",
+            }
+            missing = [label for label, value in required.items() if not value]
+            if missing:
+                raise RuntimeError("Missing required fields: " + ", ".join(missing))
+            if not separate_repos:
+                if not fields["repo_url"]:
+                    raise RuntimeError("GitHub repository is required.")
+                if not re.match(r"^https://github\.com/[^/]+/[^/]+/?$", fields["repo_url"]):
+                    raise RuntimeError("Repository must be a public GitHub repository URL.")
 
-        if not re.match(r"^https://github\.com/[^/]+/[^/]+/?$", fields["repo_url"]):
-            self.submit_status.set_text("Repository must be a public GitHub repository URL.")
-            return
+        details = {}
+        if separate_repos:
+            for platform in platforms:
+                details[platform] = self._platform_metadata_for_submission(platform, final)
 
         artifacts = []
-        if fields["deb_url"]:
-            artifacts.append({"platform": "Linux", "packageType": "deb", "downloadUrl": fields["deb_url"]})
-        if fields["rpm_url"]:
-            artifacts.append({"platform": "Linux", "packageType": "rpm", "downloadUrl": fields["rpm_url"]})
-        if not artifacts:
-            self.submit_status.set_text("Add at least one Linux download: DEB or RPM.")
-            return
+        if "Android" in platforms and fields["android_url"]:
+            artifacts.append({
+                "platform": "Android",
+                "packageType": "apk",
+                "downloadUrl": fields["android_url"],
+                **(details.get("Android") or {}),
+            })
+        if "Windows" in platforms and fields["windows_exe_url"]:
+            artifacts.append({
+                "platform": "Windows",
+                "packageType": "exe",
+                "downloadUrl": fields["windows_exe_url"],
+                **(details.get("Windows") or {}),
+            })
+        if "Windows" in platforms and fields["windows_msi_url"]:
+            artifacts.append({
+                "platform": "Windows",
+                "packageType": "msi",
+                "downloadUrl": fields["windows_msi_url"],
+                **(details.get("Windows") or {}),
+            })
+        if "Linux" in platforms and fields["deb_url"]:
+            artifacts.append({
+                "platform": "Linux",
+                "packageType": "deb",
+                "downloadUrl": fields["deb_url"],
+                **(details.get("Linux") or {}),
+            })
+        if "Linux" in platforms and fields["rpm_url"]:
+            artifacts.append({
+                "platform": "Linux",
+                "packageType": "rpm",
+                "downloadUrl": fields["rpm_url"],
+                **(details.get("Linux") or {}),
+            })
 
-        metadata = {
+        if final:
+            if "Android" in platforms:
+                if not fields["android_url"]:
+                    raise RuntimeError("Android requires an APK download URL.")
+                if not re.match(r"^([A-Za-z][A-Za-z0-9_]*\.)+[A-Za-z][A-Za-z0-9_]*$", fields["package_name"]):
+                    raise RuntimeError("Android requires a valid package name.")
+                if not fields["version_code"].isdigit() or int(fields["version_code"]) <= 0:
+                    raise RuntimeError("Android requires a positive versionCode.")
+            if "Windows" in platforms and not (fields["windows_exe_url"] or fields["windows_msi_url"]):
+                raise RuntimeError("Windows requires an EXE or MSI download URL.")
+            if "Linux" in platforms and not (fields["deb_url"] or fields["rpm_url"]):
+                raise RuntimeError("Linux requires a DEB or RPM download URL.")
+            if not artifacts:
+                raise RuntimeError("At least one valid platform download is required.")
+
+        primary_platform = platforms[0] if platforms else None
+        primary_repo = (
+            details.get(primary_platform, {}).get("repoUrl")
+            if separate_repos and primary_platform
+            else fields["repo_url"]
+        )
+
+        english = {
             "locale": "en-US",
             "title": fields["name"],
             "shortDescription": texts["short_description"],
@@ -2119,69 +2365,185 @@ class LumaStoreWindow(Gtk.ApplicationWindow):
             "changelog": texts["changelog"],
             "screenshots": screenshots,
         }
+        existing = list(getattr(self, "submit_existing_localized_metadata", []) or [])
+        localized = []
+        replaced_english = False
+        for item in existing:
+            if not isinstance(item, dict):
+                continue
+            locale = str(item.get("locale") or "")
+            if locale.lower() == "en-us" or locale.lower().startswith("en"):
+                if not replaced_english:
+                    localized.append(english)
+                    replaced_english = True
+            else:
+                localized.append(item)
+        if not replaced_english:
+            localized.insert(0, english)
+
+        version_code = int(fields["version_code"]) if fields["version_code"].isdigit() else None
         submission = {
-            "name": fields["name"],
-            "short_description": texts["short_description"],
-            "description": texts["description"],
-            "link": fields["repo_url"],
-            "repo_url": fields["repo_url"],
-            "source_code_url": fields["repo_url"],
-            "category": categories[0],
+            "name": fields["name"] or "Untitled draft",
+            "short_description": texts["short_description"] or None,
+            "description": texts["description"] or None,
+            "link": primary_repo or None,
+            "repo_url": primary_repo or None,
+            "source_code_url": primary_repo or None,
+            "category": categories[0] if categories else None,
             "categories": categories,
             "subcategory": None,
-            "license_type": fields["license_type"],
+            "license_type": fields["license_type"] or None,
             "closed_source": False,
-            "localized_metadata": [metadata],
-            "icon_url": fields["icon_url"],
-            "version": fields["version"],
-            "platform": "Linux",
+            "localized_metadata": localized,
+            "icon_url": fields["icon_url"] or None,
+            "version": fields["version"] or None,
+            "platform": primary_platform,
             "platforms": artifacts,
-            "separate_platform_repos": False,
+            "separate_platform_repos": separate_repos,
             "linux_package_base": None,
-            "download_url": artifacts[0]["downloadUrl"],
-            "changelog": texts["changelog"],
-            "package_name": None,
-            "version_code": None,
+            "download_url": artifacts[0]["downloadUrl"] if artifacts else None,
+            "changelog": texts["changelog"] or None,
+            "package_name": fields["package_name"] if "Android" in platforms else None,
+            "version_code": version_code if "Android" in platforms else None,
             "screenshots": screenshots,
             "website_url": fields["website_url"] or None,
             "issue_tracker_url": fields["issue_tracker_url"] or None,
             "translation_url": fields["translation_url"] or None,
+            "changelog_url": fields["changelog_url"] or None,
             "author_name": fields["author_name"] or None,
             "author_email": fields["author_email"] or None,
             "author_website": fields["author_website"] or None,
+            "review_message": None,
         }
+        return submission
 
-        self.submit_button.set_sensitive(False)
-        self.submit_status.set_text("Submitting app…")
+    def save_submission_draft(self, _button):
+        if not self.auth.access_token():
+            self.submit_status.set_text("Sign in before saving a draft.")
+            return
+        try:
+            submission = self._build_submission_payload(final=False)
+        except Exception as error:
+            self.submit_status.set_text(str(error))
+            return
+        self.submit_draft_button.set_sensitive(False)
+        self.submit_status.set_text("Saving draft…")
+        editing_id = self.submit_draft_id if self.submit_editing_status == "Draft" else None
         threading.Thread(
-            target=self._submit_linux_app_worker,
-            args=(submission,),
+            target=self._save_draft_worker,
+            args=(submission, editing_id),
             daemon=True,
         ).start()
 
-    def _submit_linux_app_worker(self, submission):
+    def _save_draft_worker(self, submission, editing_id):
         try:
-            saved = self.dashboard_api.submit_linux_app(submission)
-            GLib.idle_add(self._submit_linux_app_done, saved)
+            saved = self.dashboard_api.save_draft(submission, editing_id=editing_id, draft_step=1)
+            GLib.idle_add(self._save_draft_done, saved)
         except Exception as error:
-            GLib.idle_add(self._submit_linux_app_failed, str(error))
+            GLib.idle_add(self._submission_action_failed, f"Draft could not be saved: {error}")
 
-    def _submit_linux_app_done(self, saved):
-        self.submit_button.set_sensitive(True)
-        self.submit_status.set_text(
-            f"Submitted {saved.get('name') or 'app'} successfully. Status: {saved.get('status') or 'Pending'}."
+    def _save_draft_done(self, saved):
+        self.submit_draft_button.set_sensitive(True)
+        self.submit_draft_id = saved.get("id")
+        self.submit_editing_id = saved.get("id")
+        self.submit_editing_status = "Draft"
+        self.submit_status.set_text("Draft saved.")
+        self.load_dashboard_submissions()
+        return False
+
+    def submit_app(self, _button):
+        if not self.auth.access_token():
+            self.submit_status.set_text("Sign in before submitting an app.")
+            return
+        if not self.auth.provider_token():
+            self.submit_status.set_text(
+                "Final submission requires GitHub login. Sign out and sign in with GitHub."
+            )
+            return
+        try:
+            submission = self._build_submission_payload(final=True)
+        except Exception as error:
+            self.submit_status.set_text(str(error))
+            return
+
+        editing_id = self.submit_draft_id or self.submit_editing_id
+        editing_status = "Draft" if self.submit_draft_id else self.submit_editing_status
+        self.submit_button.set_sensitive(False)
+        self.submit_draft_button.set_sensitive(False)
+        self.submit_status.set_text("Submitting app…")
+        threading.Thread(
+            target=self._submit_app_worker,
+            args=(submission, editing_id, editing_status),
+            daemon=True,
+        ).start()
+
+    def _submit_app_worker(self, submission, editing_id, editing_status):
+        try:
+            saved = self.dashboard_api.save_submission(
+                submission,
+                editing_id=editing_id,
+                editing_status=editing_status,
+            )
+            GLib.idle_add(self._submit_app_done, saved)
+        except Exception as error:
+            GLib.idle_add(self._submission_action_failed, f"Submission failed: {error}")
+
+    def _submit_app_done(self, saved):
+        message = (
+            f"Submitted {saved.get('name') or 'app'} successfully. "
+            f"Status: {saved.get('status') or 'Pending'}."
         )
         self.clear_submission_form()
-        self.submit_status.set_text(
-            f"Submitted {saved.get('name') or 'app'} successfully. Status: {saved.get('status') or 'Pending'}."
-        )
+        self.submit_button.set_sensitive(bool(self.auth.provider_token()))
+        self.submit_draft_button.set_sensitive(True)
+        self.submit_status.set_text(message)
         self.submit_expander.set_expanded(False)
         self.load_dashboard_submissions()
         return False
 
-    def _submit_linux_app_failed(self, message):
-        self.submit_button.set_sensitive(True)
-        self.submit_status.set_text(f"Submission failed: {message}")
+    def _submission_action_failed(self, message):
+        self.submit_button.set_sensitive(bool(self.auth.provider_token()))
+        self.submit_draft_button.set_sensitive(True)
+        self.submit_status.set_text(message)
+        return False
+
+    def confirm_remove_submission(self, submission):
+        submission_id = submission.get("id")
+        if not submission_id:
+            return
+        action = "Archive" if submission.get("status") == "Approved" else "Delete"
+        dialog = Gtk.MessageDialog(
+            transient_for=self,
+            modal=True,
+            message_type=Gtk.MessageType.WARNING,
+            buttons=Gtk.ButtonsType.OK_CANCEL,
+            text=f"{action} {submission.get('name') or 'app'}?",
+        )
+        dialog.format_secondary_text(
+            "The published app will be archived and removed from active Store listings."
+            if action == "Archive"
+            else "This submission will be permanently deleted."
+        )
+        response = dialog.run()
+        dialog.destroy()
+        if response != Gtk.ResponseType.OK:
+            return
+        self.dashboard_stats.set_text(f"{action} in progress…")
+        threading.Thread(
+            target=self._remove_submission_worker,
+            args=(submission_id,),
+            daemon=True,
+        ).start()
+
+    def _remove_submission_worker(self, submission_id):
+        try:
+            result = self.dashboard_api.remove_submission(submission_id)
+            GLib.idle_add(self._remove_submission_done, result)
+        except Exception as error:
+            GLib.idle_add(self.dashboard_stats.set_text, f"Action failed: {error}")
+
+    def _remove_submission_done(self, _result):
+        self.open_dashboard()
         return False
 
     def load_dashboard_submissions(self):

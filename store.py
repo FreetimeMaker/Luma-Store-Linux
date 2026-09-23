@@ -833,6 +833,8 @@ class LumaStoreWindow(Gtk.ApplicationWindow):
         self.submit_draft_id = None
         self.submit_editing_id = None
         self.submit_editing_status = None
+        self.submit_existing_localized_metadata = []
+        self.submission_options_loaded = False
 
         def add_entry(row, key, title, placeholder=""):
             label = Gtk.Label(label=title, xalign=0)
@@ -1892,11 +1894,32 @@ class LumaStoreWindow(Gtk.ApplicationWindow):
                 ("Error", "error_message"),
             ):
                 add_field(self.submission_security_box, title, scan.get(key))
+            if scan.get("virus_total_permalink"):
+                vt_button = Gtk.Button(label="Open VirusTotal report")
+                vt_button.set_halign(Gtk.Align.START)
+                vt_button.connect(
+                    "clicked",
+                    lambda _b, url=str(scan.get("virus_total_permalink")): self.open_external_url(url),
+                )
+                self.submission_security_box.pack_start(vt_button, False, False, 0)
         else:
             self.submission_security_box.pack_start(
                 Gtk.Label(label="No security scan is available yet.", xalign=0),
                 False, False, 0,
             )
+
+        published = data.get("published") or {}
+        if published:
+            package_name = published.get("package_name") or submission.get("package_name")
+            developer_name = published.get("developer_name")
+            if package_name or developer_name:
+                badge = Gtk.Button(label="Copy README download badge")
+                badge.set_halign(Gtk.Align.START)
+                badge.connect(
+                    "clicked",
+                    lambda _b, package=package_name, developer=developer_name: self.copy_download_badge(package, developer),
+                )
+                self.submission_overview_box.pack_start(badge, False, False, 0)
 
         versions = data.get("versions", [])
         if versions:
@@ -1987,6 +2010,35 @@ class LumaStoreWindow(Gtk.ApplicationWindow):
         submission = data.get("submission") or {}
         self.confirm_remove_submission(submission)
 
+    @staticmethod
+    def open_external_url(url):
+        try:
+            Gio.AppInfo.launch_default_for_uri(str(url), None)
+        except Exception:
+            webbrowser.open(str(url))
+        return False
+
+    def copy_download_badge(self, package_name=None, developer_name=None):
+        if package_name:
+            query = "package_name=" + urllib.parse.quote(str(package_name), safe="")
+            target = "https://luma.free-time.me/discover/" + urllib.parse.quote(str(package_name), safe="")
+            alt = "Luma Store downloads"
+        elif developer_name:
+            query = "developer_name=" + urllib.parse.quote(str(developer_name), safe="") + "&badge_v=3"
+            target = "https://luma.free-time.me/discover/developers/" + urllib.parse.quote(str(developer_name), safe="")
+            alt = "Luma Store total downloads"
+        else:
+            return False
+        badge_url = f"{SUPABASE_URL}/functions/v1/download-badge?{query}"
+        markdown = f"[![{alt}]({badge_url})]({target})"
+        clipboard = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
+        clipboard.set_text(markdown, -1)
+        clipboard.store()
+        self.submission_details_status.set_text(
+            self.submission_details_status.get_text() + "  •  Badge Markdown copied"
+        )
+        return False
+
     def _refresh_active_security_scan(self, submission_id):
         if (
             not submission_id
@@ -2019,6 +2071,44 @@ class LumaStoreWindow(Gtk.ApplicationWindow):
         self.refresh_dashboard_state()
         if self.auth.access_token():
             self.load_dashboard_submissions()
+            if not self.submission_options_loaded:
+                threading.Thread(target=self._submission_options_worker, daemon=True).start()
+
+    def _submission_options_worker(self):
+        try:
+            categories = self.dashboard_api.categories()
+            licenses = self.dashboard_api.licenses()
+            GLib.idle_add(self._submission_options_loaded, categories, licenses)
+        except Exception:
+            # These are conveniences only; free-form input stays available.
+            pass
+
+    def _submission_options_loaded(self, categories, licenses):
+        def completion_for(values):
+            model = Gtk.ListStore(str)
+            seen = set()
+            for value in values:
+                value = str(value or "").strip()
+                if value and value not in seen:
+                    model.append([value])
+                    seen.add(value)
+            completion = Gtk.EntryCompletion()
+            completion.set_model(model)
+            completion.set_text_column(0)
+            completion.set_inline_completion(True)
+            completion.set_popup_completion(True)
+            return completion
+
+        self.submit_fields["categories"].set_completion(completion_for(categories))
+        self.submit_fields["license_type"].set_completion(
+            completion_for([
+                row.get("name") or row.get("display_name")
+                for row in licenses
+                if isinstance(row, dict)
+            ])
+        )
+        self.submission_options_loaded = True
+        return False
 
     def refresh_dashboard_state(self):
         token = self.auth.access_token()

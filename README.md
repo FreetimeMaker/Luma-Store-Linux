@@ -16,7 +16,7 @@ Built with **Python 3** and **GTK 3**.
 
 ### Key Capabilities
 *   **Liquid Glass UI:** Native GTK 3 surfaces now use translucent glass panels, rounded controls, subtle borders, gradients and shadows throughout the store.
-*   **Native Developer Dashboard:** Sign in with GitHub or GitLab using the system browser and manage the dashboard inside GTK — no WebView is embedded in the app. The native dashboard shows your submissions, review state, status totals and submission details.
+*   **Native Developer Dashboard:** Sign in with GitHub or GitLab using the system browser and manage the dashboard inside GTK — no WebView is embedded in the app. The native dashboard shows your submissions, review state, status totals and submission details, and includes a native Linux app submission form for DEB/RPM releases.
 *   **App Discovery & Search:** Instantly loads available software from the API feed and features a live search activation view.
 *   **Dynamic Category Navigation:** Simple filtering using computed category indices directly from the server feed, with an interactive reset selector to view all applications.
 *   **Rich Dynamic Information:** Renders application icons, descriptions, versions, file sizes, and automatically parses any additional structural keys provided by the API backend.
@@ -74,7 +74,9 @@ The Developer Dashboard uses `supabase-py` with Supabase OAuth and PKCE. OAuth c
 
 That callback must be present in the Luma Store Supabase project's allowed redirect URLs. The `supabase-py` auth client persists and refreshes the session through a small file-backed storage adapter at `~/.config/luma-store/session.json` with user-only file permissions.
 
-No WebView is used.
+No WebView is used. Final app submissions require GitHub login because the Luma Store backend verifies repository ownership/write access using the GitHub provider token.
+
+DEB and RPM build targets vendor the pinned `supabase-py` runtime into `/usr/lib/luma-store/vendor`, so installed packages do not depend on a separately installed system-wide `supabase` Python package.
 
 ## Makefile Commands
 
@@ -82,6 +84,7 @@ If you want to build Luma Store Linux from source, ensure you have the following
 * `python3`
 * `gtk3`
 * `pygobject`
+* `python3-pip` (for source/package builds)
 * `supabase==2.31.0`
 <br>
 <br>

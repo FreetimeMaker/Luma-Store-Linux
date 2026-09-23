@@ -771,7 +771,20 @@ class LumaStoreWindow(Gtk.ApplicationWindow):
         self.dashboard_stats.get_style_context().add_class("dashboard-stats")
         self.dashboard.pack_start(self.dashboard_stats, False, False, 0)
 
-        self.submit_expander = Gtk.Expander(label="New Linux app submission")
+        dashboard_tools = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        for label, page, loader in (
+            ("Analytics", "dashboard_analytics", self.open_dashboard_analytics),
+            ("Developer profile", "dashboard_profile", self.open_dashboard_profile),
+            ("Funding", "dashboard_funding", self.open_dashboard_funding),
+            ("Status & timeline", "dashboard_status", self.open_dashboard_status),
+            ("Notifications", "dashboard_notifications", self.open_dashboard_notifications),
+        ):
+            button = Gtk.Button(label=label)
+            button.connect("clicked", lambda _b, callback=loader: callback())
+            dashboard_tools.pack_start(button, False, False, 0)
+        self.dashboard.pack_start(dashboard_tools, False, False, 0)
+
+        self.submit_expander = Gtk.Expander(label="New app submission")
         self.submit_expander.set_expanded(False)
         submit_scrolled = Gtk.ScrolledWindow()
         submit_scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
@@ -781,7 +794,7 @@ class LumaStoreWindow(Gtk.ApplicationWindow):
         submit_box.set_border_width(14)
         submit_box.get_style_context().add_class("glass-card")
         submit_intro = Gtk.Label(
-            label="Create a Linux submission natively. Final submissions require GitHub login so Luma Store can verify repository ownership.",
+            label="Submit and maintain Android, Windows and Linux apps natively. Drafts can be saved before all required fields are complete; final submissions require GitHub verification.",
             xalign=0,
             wrap=True,
         )
@@ -792,6 +805,12 @@ class LumaStoreWindow(Gtk.ApplicationWindow):
         submit_box.pack_start(submit_grid, False, False, 0)
         self.submit_fields = {}
         self.submit_textviews = {}
+        self.submit_platform_checks = {}
+        self.submit_platform_fields = {}
+        self.submit_platform_textviews = {}
+        self.submit_draft_id = None
+        self.submit_editing_id = None
+        self.submit_editing_status = None
 
         def add_entry(row, key, title, placeholder=""):
             label = Gtk.Label(label=title, xalign=0)
@@ -818,14 +837,34 @@ class LumaStoreWindow(Gtk.ApplicationWindow):
             return row + 1
 
         row = 0
-        row = add_entry(row, "name", "Title", "My Linux app")
+        platform_label = Gtk.Label(label="Platforms", xalign=0)
+        platform_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        for platform in ("Android", "Windows", "Linux"):
+            check = Gtk.CheckButton(label=platform)
+            self.submit_platform_checks[platform] = check
+            platform_box.pack_start(check, False, False, 0)
+        submit_grid.attach(platform_label, 0, row, 1, 1)
+        submit_grid.attach(platform_box, 1, row, 1, 1)
+        row += 1
+
+        self.submit_separate_repos = Gtk.CheckButton(label="Different repository per platform")
+        submit_grid.attach(Gtk.Label(label="Repository layout", xalign=0), 0, row, 1, 1)
+        submit_grid.attach(self.submit_separate_repos, 1, row, 1, 1)
+        row += 1
+
+        row = add_entry(row, "name", "Title", "My app")
         row = add_entry(row, "repo_url", "GitHub repository", "https://github.com/owner/repository")
         row = add_entry(row, "categories", "Categories", "Development, System")
         row = add_entry(row, "license_type", "Open-source license", "GPL-3.0-only")
         row = add_entry(row, "version", "Version", "1.0.0")
         row = add_entry(row, "icon_url", "Icon URL", "https://...")
-        row = add_entry(row, "deb_url", "DEB URL", "https://.../app.deb")
-        row = add_entry(row, "rpm_url", "RPM URL", "https://.../app.rpm")
+        row = add_entry(row, "android_url", "Android APK URL", "https://.../app.apk")
+        row = add_entry(row, "package_name", "Android package name", "com.example.app")
+        row = add_entry(row, "version_code", "Android versionCode", "1")
+        row = add_entry(row, "windows_exe_url", "Windows EXE URL", "https://.../app.exe")
+        row = add_entry(row, "windows_msi_url", "Windows MSI URL", "https://.../app.msi")
+        row = add_entry(row, "deb_url", "Linux DEB URL", "https://.../app.deb")
+        row = add_entry(row, "rpm_url", "Linux RPM URL", "https://.../app.rpm")
         row = add_text_area(row, "short_description", "Short description")
         row = add_text_area(row, "description", "Full description", 110)
         row = add_text_area(row, "changelog", "Changelog")
@@ -836,13 +875,60 @@ class LumaStoreWindow(Gtk.ApplicationWindow):
         row = add_entry(row, "website_url", "App website", "https://...")
         row = add_entry(row, "issue_tracker_url", "Issue tracker", "https://...")
         row = add_entry(row, "translation_url", "Translation URL", "https://...")
+        row = add_entry(row, "changelog_url", "Changelog URL", "https://...")
+
+        platform_metadata_expander = Gtk.Expander(label="Platform-specific repositories & store metadata")
+        platform_metadata_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        platform_metadata_box.set_border_width(10)
+        for platform in ("Android", "Windows", "Linux"):
+            frame = Gtk.Frame(label=platform)
+            grid = Gtk.Grid(column_spacing=10, row_spacing=8)
+            grid.set_border_width(10)
+            frame.add(grid)
+            fields = {}
+            textviews = {}
+            for field_row, (key, title) in enumerate((
+                ("repo_url", "Repository URL"),
+                ("title", "Title"),
+            )):
+                label = Gtk.Label(label=title, xalign=0)
+                entry = Gtk.Entry()
+                entry.set_hexpand(True)
+                grid.attach(label, 0, field_row, 1, 1)
+                grid.attach(entry, 1, field_row, 1, 1)
+                fields[key] = entry
+            base_row = 2
+            for offset, (key, title, height) in enumerate((
+                ("short_description", "Short description", 65),
+                ("description", "Full description", 95),
+                ("changelog", "Changelog", 75),
+                ("screenshots", "Screenshot URLs", 75),
+            )):
+                label = Gtk.Label(label=title, xalign=0)
+                label.set_valign(Gtk.Align.START)
+                view = Gtk.TextView()
+                view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+                scroller = Gtk.ScrolledWindow()
+                scroller.set_min_content_height(height)
+                scroller.add(view)
+                grid.attach(label, 0, base_row + offset, 1, 1)
+                grid.attach(scroller, 1, base_row + offset, 1, 1)
+                textviews[key] = view
+            self.submit_platform_fields[platform] = fields
+            self.submit_platform_textviews[platform] = textviews
+            platform_metadata_box.pack_start(frame, False, False, 0)
+        platform_metadata_expander.add(platform_metadata_box)
+        submit_box.pack_start(platform_metadata_expander, False, False, 0)
 
         submit_actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        self.submit_button = Gtk.Button(label="Submit Linux app")
+        self.submit_draft_button = Gtk.Button(label="Save draft")
+        self.submit_draft_button.connect("clicked", self.save_submission_draft)
+        self.submit_button = Gtk.Button(label="Submit app")
         self.submit_button.get_style_context().add_class("glass-primary")
-        self.submit_button.connect("clicked", self.submit_linux_app)
+        self.submit_button.connect("clicked", self.submit_app)
         clear_submit_button = Gtk.Button(label="Clear")
         clear_submit_button.connect("clicked", lambda _b: self.clear_submission_form())
+        submit_actions.pack_start(self.submit_draft_button, False, False, 0)
         submit_actions.pack_start(self.submit_button, False, False, 0)
         submit_actions.pack_start(clear_submit_button, False, False, 0)
         submit_box.pack_start(submit_actions, False, False, 0)
@@ -864,6 +950,8 @@ class LumaStoreWindow(Gtk.ApplicationWindow):
         self.dashboard_scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         self.dashboard_scrolled.add(self.dashboard_list)
         self.dashboard.pack_start(self.dashboard_scrolled, True, True, 0)
+
+        self._build_dashboard_aux_pages()
 
         self.details_scrolled = Gtk.ScrolledWindow()
         self.details_scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
@@ -923,6 +1011,12 @@ class LumaStoreWindow(Gtk.ApplicationWindow):
         self.stack.add_named(search_page, "search")
         self.stack.add_named(self.categories_page, "categories")
         self.stack.add_named(self.dashboard, "dashboard")
+        self.stack.add_named(self.analytics_page, "dashboard_analytics")
+        self.stack.add_named(self.profile_page, "dashboard_profile")
+        self.stack.add_named(self.funding_page, "dashboard_funding")
+        self.stack.add_named(self.status_page, "dashboard_status")
+        self.stack.add_named(self.notifications_page, "dashboard_notifications")
+        self.stack.add_named(self.submission_details_page, "dashboard_app")
         self.stack.add_named(self.details_scrolled, "details")
         self.stack.set_visible_child_name("discover")
 

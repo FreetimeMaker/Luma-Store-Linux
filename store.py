@@ -9,6 +9,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import webbrowser
+from datetime import datetime, timezone
 from pathlib import Path
 
 VENDOR_DIR = Path("/usr/lib/luma-store/vendor")
@@ -236,65 +237,432 @@ h1{{margin-top:0}}p{{color:#b9c3d5;line-height:1.6}}</style></head><body><main><
 
 
 class DeveloperDashboardApi:
+    SUBMISSION_COLUMNS = (
+        "id,user_id,name,short_description,description,status,submitted_at,status_updated_at,"
+        "approved_at,rejected_at,review_message,category,categories,subcategory,license_type,"
+        "icon_url,version,version_code,package_name,changelog,screenshots,localized_metadata,"
+        "platform,platforms,separate_platform_repos,linux_package_base,download_url,repo_url,link,"
+        "source_code_url,author_name,author_email,author_website,website_url,issue_tracker_url,"
+        "translation_url,changelog_url,ant_features,store_app_id,draft_step,draft_updated_at"
+    )
+
     def __init__(self, auth):
         self.auth = auth
 
-    def submissions(self):
+    @staticmethod
+    def _data(response):
+        return getattr(response, "data", None)
+
+    @staticmethod
+    def _now():
+        return datetime.now(timezone.utc).isoformat()
+
+    def _user(self):
         user = self.auth.user()
         if not user or not user.get("id"):
-            raise RuntimeError("Sign in to load your developer dashboard.")
+            raise RuntimeError("Sign in to use the developer dashboard.")
+        return user
 
-        columns = (
-            "id,name,short_description,description,status,submitted_at,status_updated_at,"
-            "category,version,platform,linux_package_base,store_app_id,review_message,repo_url,"
-            "download_url,package_name"
-        )
+    def submissions(self):
+        user = self._user()
         response = (
             self.auth.client.table("luma_submissions")
-            .select(columns)
+            .select(self.SUBMISSION_COLUMNS)
             .eq("user_id", user["id"])
             .order("submitted_at", desc=True)
             .execute()
         )
-        return response.data or []
+        rows = self._data(response) or []
 
-    def submit_linux_app(self, submission):
+        # Match the web dashboard: hide stale duplicate approved submissions when
+        # a canonical published store app points at a different submission.
+        apps_response = (
+            self.auth.client.table("store_apps")
+            .select("id,luma_submission_id,developer_name")
+            .eq("developer_id", user["id"])
+            .execute()
+        )
+        store_apps = self._data(apps_response) or []
+        canonical = {
+            row.get("luma_submission_id")
+            for row in store_apps
+            if row.get("luma_submission_id")
+        }
+        if canonical:
+            rows = [
+                row for row in rows
+                if row.get("status") != "Approved" or row.get("id") in canonical
+            ]
+        return rows
+
+    def categories(self):
+        response = (
+            self.auth.client.table("store_categories")
+            .select("name")
+            .order("name")
+            .execute()
+        )
+        return [row.get("name") for row in (self._data(response) or []) if row.get("name")]
+
+    def licenses(self):
+        response = (
+            self.auth.client.table("store_license_types")
+            .select("name,display_name")
+            .eq("open_source", True)
+            .order("display_name")
+            .execute()
+        )
+        return self._data(response) or []
+
+    def analytics(self):
+        self._user()
+        response = self.auth.client.rpc("luma_my_developer_analytics").execute()
+        return self._data(response) or {
+            "total_downloads": 0,
+            "apps": [],
+            "platforms": [],
+            "app_platforms": [],
+            "daily": [],
+            "funding": [],
+        }
+
+    def profile(self):
+        user = self._user()
+        response = (
+            self.auth.client.table("luma_developer_profiles")
+            .select("display_name,bio,website_url,github_url,gitlab_url,avatar_url,verified")
+            .eq("developer_id", user["id"])
+            .limit(1)
+            .execute()
+        )
+        rows = self._data(response) or []
+        return rows[0] if rows else {}
+
+    def save_profile(self, profile):
+        user = self._user()
+        payload = {
+            "developer_id": user["id"],
+            "display_name": profile.get("display_name") or None,
+            "bio": profile.get("bio") or None,
+            "website_url": profile.get("website_url") or None,
+            "github_url": profile.get("github_url") or None,
+            "gitlab_url": profile.get("gitlab_url") or None,
+            "avatar_url": profile.get("avatar_url") or None,
+            "updated_at": self._now(),
+        }
+        response = (
+            self.auth.client.table("luma_developer_profiles")
+            .upsert(payload, on_conflict="developer_id")
+            .execute()
+        )
+        return self._data(response)
+
+    def funding(self):
+        user = self._user()
+        response = (
+            self.auth.client.table("luma_developer_funding")
+            .select("donate_url,liberapay,opencollective,bitcoin,litecoin,crypto_addresses")
+            .eq("developer_id", user["id"])
+            .limit(1)
+            .execute()
+        )
+        rows = self._data(response) or []
+        return rows[0] if rows else {}
+
+    def save_funding(self, funding):
+        user = self._user()
+        crypto = {
+            key: str(value).strip()
+            for key, value in (funding.get("crypto_addresses") or {}).items()
+            if str(value).strip()
+        }
+        payload = {
+            "developer_id": user["id"],
+            "donate_url": funding.get("donate_url") or None,
+            "liberapay": funding.get("liberapay") or None,
+            "opencollective": funding.get("opencollective") or None,
+            "crypto_addresses": crypto,
+            "bitcoin": crypto.get("bitcoin::Bitcoin") or None,
+            "litecoin": crypto.get("litecoin::Litecoin") or None,
+            "updated_at": self._now(),
+        }
+        response = (
+            self.auth.client.table("luma_developer_funding")
+            .upsert(payload, on_conflict="developer_id")
+            .execute()
+        )
+        return self._data(response)
+
+    def status_data(self, submission_id=None):
+        user = self._user()
+        query = (
+            self.auth.client.table("luma_submissions")
+            .select(
+                "id,name,description,link,category,status,submitted_at,review_message,"
+                "changelog,status_updated_at,approved_at,rejected_at"
+            )
+            .eq("user_id", user["id"])
+        )
+        if submission_id:
+            query = query.eq("id", submission_id)
+        rows = self._data(query.order("submitted_at", desc=True).execute()) or []
+
+        if not submission_id:
+            store_apps = self._data(
+                self.auth.client.table("store_apps")
+                .select("luma_submission_id")
+                .eq("developer_id", user["id"])
+                .execute()
+            ) or []
+            canonical = {row.get("luma_submission_id") for row in store_apps if row.get("luma_submission_id")}
+            if canonical:
+                rows = [
+                    row for row in rows
+                    if row.get("status") != "Approved" or row.get("id") in canonical
+                ]
+
+        history = []
+        ids = [row.get("id") for row in rows if row.get("id")]
+        if ids:
+            history = self._data(
+                self.auth.client.table("luma_submission_status_history")
+                .select("id,submission_id,status,review_message,created_at")
+                .in_("submission_id", ids)
+                .order("created_at")
+                .execute()
+            ) or []
+        return {"submissions": rows, "history": history}
+
+    def notifications(self):
+        user = self._user()
+        response = (
+            self.auth.client.table("luma_developer_notifications")
+            .select("id,submission_id,type,title,message,created_at,read_at")
+            .eq("user_id", user["id"])
+            .order("created_at", desc=True)
+            .limit(100)
+            .execute()
+        )
+        return self._data(response) or []
+
+    def mark_notification_read(self, notification_id):
+        user = self._user()
+        return self._data(
+            self.auth.client.table("luma_developer_notifications")
+            .update({"read_at": self._now()})
+            .eq("id", notification_id)
+            .eq("user_id", user["id"])
+            .execute()
+        )
+
+    def review_comments(self, submission_id):
+        self._user()
+        response = (
+            self.auth.client.table("luma_review_comments")
+            .select("id,submission_id,user_id,body,created_at")
+            .eq("submission_id", submission_id)
+            .order("created_at")
+            .execute()
+        )
+        return self._data(response) or []
+
+    def add_review_comment(self, submission_id, body):
+        user = self._user()
+        body = str(body or "").strip()
+        if not body:
+            raise RuntimeError("Comment cannot be empty.")
+        response = (
+            self.auth.client.table("luma_review_comments")
+            .insert({
+                "submission_id": submission_id,
+                "user_id": user["id"],
+                "body": body,
+            })
+            .execute()
+        )
+        return self._data(response)
+
+    def submission_details(self, submission_id):
+        user = self._user()
+        response = (
+            self.auth.client.table("luma_submissions")
+            .select(self.SUBMISSION_COLUMNS)
+            .eq("id", submission_id)
+            .eq("user_id", user["id"])
+            .limit(1)
+            .execute()
+        )
+        rows = self._data(response) or []
+        if not rows:
+            raise RuntimeError("Submission not found or you do not have access to it.")
+        submission = rows[0]
+
+        scan_rows = self._data(
+            self.auth.client.table("luma_security_scans")
+            .select(
+                "id,status,risk_level,findings,permissions,scanned_at,created_at,provider,"
+                "virus_total_permalink,malicious_count,suspicious_count,harmless_count,"
+                "undetected_count,error_message,file_name,file_size_bytes"
+            )
+            .eq("submission_id", submission_id)
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        ) or []
+        scan = scan_rows[0] if scan_rows else None
+
+        history = self.status_data(submission_id).get("history", [])
+        comments = self.review_comments(submission_id)
+
+        versions = []
+        if submission.get("package_name"):
+            versions = self._data(
+                self.auth.client.table("luma_app_versions")
+                .select("id,version,version_code,changelog,download_url,status,created_at,published_at")
+                .eq("package_name", submission["package_name"])
+                .order("created_at", desc=True)
+                .execute()
+            ) or []
+
+        published = None
+        store_app_id = submission.get("store_app_id")
+        if store_app_id:
+            published_rows = self._data(
+                self.auth.client.table("store_apps")
+                .select(
+                    "id,name,short_description,description,version,version_code,package_name,"
+                    "license_type,repo_url,changelog,ant_features,updated_at,developer_name"
+                )
+                .eq("id", store_app_id)
+                .limit(1)
+                .execute()
+            ) or []
+            published = published_rows[0] if published_rows else None
+        elif submission.get("status") == "Approved":
+            published_rows = self._data(
+                self.auth.client.table("store_apps")
+                .select(
+                    "id,name,short_description,description,version,version_code,package_name,"
+                    "license_type,repo_url,changelog,ant_features,updated_at,developer_name"
+                )
+                .eq("luma_submission_id", submission_id)
+                .limit(1)
+                .execute()
+            ) or []
+            published = published_rows[0] if published_rows else None
+
+        published_platforms = []
+        stats = None
+        if published and published.get("id"):
+            published_platforms = self._data(
+                self.auth.client.table("store_app_platforms")
+                .select(
+                    "id,platform,package_type,linux_package_base,download_url,file_size_mb,"
+                    "sha256,artifact_verified_at,artifact_size_bytes,permissions"
+                )
+                .eq("app_id", published["id"])
+                .order("platform")
+                .execute()
+            ) or []
+            stat_rows = self._data(self.auth.client.rpc("get_my_luma_download_stats").execute()) or []
+            stats = next((row for row in stat_rows if row.get("app_id") == published["id"]), None)
+
+        return {
+            "submission": submission,
+            "scan": scan,
+            "history": history,
+            "comments": comments,
+            "versions": versions,
+            "published": published,
+            "published_platforms": published_platforms,
+            "stats": stats,
+        }
+
+    def _submission_request(self, body):
         access_token = self.auth.access_token()
-        provider_token = self.auth.provider_token()
         if not access_token:
             raise RuntimeError("Your Luma Store session expired. Sign in again.")
-        if not provider_token:
-            raise RuntimeError("GitHub authorization is required. Sign out and sign in with GitHub again.")
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {access_token}",
+            "User-Agent": "Luma-Store-Linux/1.1",
+        }
+        provider_token = self.auth.provider_token()
+        if provider_token:
+            headers["X-GitHub-Token"] = provider_token
 
-        payload = json.dumps({"submission": submission}).encode("utf-8")
         request = urllib.request.Request(
             f"{DASHBOARD_API_BASE}/submissions",
-            data=payload,
+            data=json.dumps(body).encode("utf-8"),
             method="POST",
+            headers=headers,
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as error:
+            raw = error.read().decode("utf-8", errors="replace")
+            try:
+                payload = json.loads(raw)
+                message = payload.get("error") or payload.get("message") or raw
+            except Exception:
+                message = raw
+            raise RuntimeError(message or f"Submission failed with HTTP {error.code}") from error
+
+        saved = payload.get("submission") if isinstance(payload, dict) else None
+        if not saved:
+            raise RuntimeError("Submission could not be saved.")
+        return saved
+
+    def save_draft(self, submission, editing_id=None, draft_step=1):
+        return self._submission_request({
+            "submission": submission,
+            "editingId": editing_id,
+            "draft": True,
+            "draftStep": draft_step,
+        })
+
+    def save_submission(self, submission, editing_id=None, editing_status=None):
+        if not self.auth.provider_token():
+            raise RuntimeError(
+                "GitHub authorization is required. Sign out and sign in with GitHub again."
+            )
+        return self._submission_request({
+            "submission": submission,
+            "editingId": editing_id,
+            "editingStatus": editing_status,
+        })
+
+    def submit_linux_app(self, submission):
+        return self.save_submission(submission)
+
+    def remove_submission(self, submission_id):
+        access_token = self.auth.access_token()
+        if not access_token:
+            raise RuntimeError("Your Luma Store session expired. Sign in again.")
+        url = f"{DASHBOARD_API_BASE}/submissions?id={urllib.parse.quote(str(submission_id), safe='')}"
+        request = urllib.request.Request(
+            url,
+            method="DELETE",
             headers={
                 "Accept": "application/json",
-                "Content-Type": "application/json",
                 "Authorization": f"Bearer {access_token}",
-                "X-GitHub-Token": provider_token,
                 "User-Agent": "Luma-Store-Linux/1.1",
             },
         )
         try:
             with urllib.request.urlopen(request, timeout=45) as response:
-                body = json.loads(response.read().decode("utf-8"))
+                raw = response.read().decode("utf-8")
+                return json.loads(raw) if raw else {}
         except urllib.error.HTTPError as error:
             raw = error.read().decode("utf-8", errors="replace")
             try:
-                body = json.loads(raw)
-                message = body.get("error") or body.get("message") or raw
+                payload = json.loads(raw)
+                message = payload.get("error") or payload.get("message") or raw
             except Exception:
                 message = raw
-            raise RuntimeError(message or f"Submission failed with HTTP {error.code}") from error
-
-        saved = body.get("submission") if isinstance(body, dict) else None
-        if not saved:
-            raise RuntimeError("Submission could not be saved.")
-        return saved
+            raise RuntimeError(message or f"Action failed with HTTP {error.code}") from error
 
 
 class LumaStoreWindow(Gtk.ApplicationWindow):

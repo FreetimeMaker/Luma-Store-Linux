@@ -15,6 +15,8 @@ Built with **Python 3** and **GTK 3**.
 *   **RPM Packages:** Downloads Red Hat `.rpm` packages to `~/Downloads` and integrates seamlessly with your standard package management utility (e.g., Fedora Software, Discover).
 
 ### Key Capabilities
+*   **Liquid Glass UI:** Native GTK 3 surfaces now use translucent glass panels, rounded controls, subtle borders, gradients and shadows throughout the store.
+*   **Native Developer Dashboard:** Sign in with GitHub or GitLab using the system browser and manage the dashboard inside GTK — no WebView is embedded in the app. The native dashboard shows your submissions, review state, status totals and submission details.
 *   **App Discovery & Search:** Instantly loads available software from the API feed and features a live search activation view.
 *   **Dynamic Category Navigation:** Simple filtering using computed category indices directly from the server feed, with an interactive reset selector to view all applications.
 *   **Rich Dynamic Information:** Renders application icons, descriptions, versions, file sizes, and automatically parses any additional structural keys provided by the API backend.
@@ -63,6 +65,16 @@ then run:
 ```bash
 sudo dnf install store -y --refresh
 ```
+
+## Native Developer Dashboard
+
+The Developer Dashboard uses Supabase OAuth with PKCE. OAuth consent opens in the system browser and returns to the running GTK app through:
+
+`http://127.0.0.1:8765/auth/callback`
+
+That callback must be present in the Luma Store Supabase project's allowed redirect URLs. The resulting session is stored locally at `~/.config/luma-store/session.json` with user-only file permissions.
+
+No WebView is used.
 
 ## Makefile Commands
 

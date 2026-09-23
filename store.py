@@ -17,8 +17,7 @@ if VENDOR_DIR.is_dir():
     sys.path.insert(0, str(VENDOR_DIR))
 
 import gi
-from supabase import create_client
-from supabase.client import ClientOptions
+from supabase import ClientOptions, create_client
 
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gtk, Gio, GLib, Gdk, GdkPixbuf
@@ -1089,13 +1088,45 @@ class LumaStoreWindow(Gtk.ApplicationWindow):
                 border-color: rgba(199, 210, 254, 0.45);
                 color: white;
             }
-            entry, searchentry {
+            entry, searchentry, textview, combobox button {
                 min-height: 38px;
                 padding: 6px 12px;
                 border-radius: 16px;
                 border: 1px solid rgba(255, 255, 255, 0.12);
                 background-color: rgba(15, 23, 42, 0.70);
                 color: #f8fafc;
+            }
+            textview text {
+                background-color: rgba(15, 23, 42, 0.70);
+                color: #f8fafc;
+            }
+            notebook header {
+                border-radius: 16px;
+                background-color: rgba(255, 255, 255, 0.055);
+                border: 1px solid rgba(255, 255, 255, 0.08);
+            }
+            notebook tab {
+                min-height: 34px;
+                padding: 5px 10px;
+                border-radius: 12px;
+            }
+            notebook tab:checked {
+                background-color: rgba(99, 102, 241, 0.18);
+            }
+            frame {
+                border-radius: 18px;
+                border: 1px solid rgba(255, 255, 255, 0.10);
+                background-color: rgba(255, 255, 255, 0.035);
+            }
+            progressbar trough {
+                min-height: 18px;
+                border-radius: 9px;
+                background-color: rgba(15, 23, 42, 0.75);
+            }
+            progressbar progress {
+                min-height: 18px;
+                border-radius: 9px;
+                background-image: linear-gradient(to right, rgba(99, 102, 241, 0.9), rgba(139, 92, 246, 0.9));
             }
             .page-surface {
                 background-color: rgba(8, 14, 26, 0.50);
@@ -1322,7 +1353,9 @@ class LumaStoreWindow(Gtk.ApplicationWindow):
         self.submission_actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         self.submission_edit_button = Gtk.Button(label="Edit app metadata")
         self.submission_edit_button.get_style_context().add_class("glass-primary")
+        self.submission_edit_button.connect("clicked", self.edit_current_submission_metadata)
         self.submission_remove_button = Gtk.Button(label="Delete / archive")
+        self.submission_remove_button.connect("clicked", self.remove_current_submission)
         self.submission_actions.pack_start(self.submission_edit_button, False, False, 0)
         self.submission_actions.pack_start(self.submission_remove_button, False, False, 0)
         self.submission_details_page.pack_start(self.submission_actions, False, False, 0)
@@ -1348,6 +1381,7 @@ class LumaStoreWindow(Gtk.ApplicationWindow):
         self.submission_comment_entry = Gtk.Entry()
         self.submission_comment_entry.set_placeholder_text("Add a review comment…")
         self.submission_comment_button = Gtk.Button(label="Send comment")
+        self.submission_comment_button.connect("clicked", self.add_current_review_comment)
         comment_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         comment_row.pack_start(self.submission_comment_entry, True, True, 0)
         comment_row.pack_start(self.submission_comment_button, False, False, 0)
@@ -1834,6 +1868,12 @@ class LumaStoreWindow(Gtk.ApplicationWindow):
             )
 
         scan = data.get("scan")
+        if scan and scan.get("status") in ("Queued", "Scanning"):
+            GLib.timeout_add_seconds(
+                12,
+                self._refresh_active_security_scan,
+                submission.get("id"),
+            )
         if scan:
             for title, key in (
                 ("Status", "status"),
@@ -1905,21 +1945,6 @@ class LumaStoreWindow(Gtk.ApplicationWindow):
         if input_row:
             self.submission_comments_box.reorder_child(input_row, -1)
 
-        try:
-            self.submission_edit_button.disconnect_by_func(self.edit_current_submission_metadata)
-        except Exception:
-            pass
-        try:
-            self.submission_remove_button.disconnect_by_func(self.remove_current_submission)
-        except Exception:
-            pass
-        try:
-            self.submission_comment_button.disconnect_by_func(self.add_current_review_comment)
-        except Exception:
-            pass
-        self.submission_edit_button.connect("clicked", self.edit_current_submission_metadata)
-        self.submission_remove_button.connect("clicked", self.remove_current_submission)
-        self.submission_comment_button.connect("clicked", self.add_current_review_comment)
         self.submission_overview_box.show_all()
         self.submission_timeline_box.show_all()
         self.submission_security_box.show_all()
@@ -1961,6 +1986,17 @@ class LumaStoreWindow(Gtk.ApplicationWindow):
         data = self.current_submission_details or {}
         submission = data.get("submission") or {}
         self.confirm_remove_submission(submission)
+
+    def _refresh_active_security_scan(self, submission_id):
+        if (
+            not submission_id
+            or self.stack.get_visible_child_name() != "dashboard_app"
+            or not self.current_submission_details
+            or (self.current_submission_details.get("submission") or {}).get("id") != submission_id
+        ):
+            return False
+        self.open_submission_by_id(submission_id)
+        return False
 
     @staticmethod
     def page_box():

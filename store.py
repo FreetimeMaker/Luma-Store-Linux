@@ -32,6 +32,29 @@ SUPABASE_PUBLISHABLE_KEY = "sb_publishable_HlppI4ILiXV7DZkpyrDEhQ_ytb2vV6g"
 SESSION_FILE = Path.home() / ".config" / "luma-store" / "session.json"
 DASHBOARD_API_BASE = "https://luma.free-time.me/api/luma"
 
+CRYPTO_OPTIONS = [
+    ("bitcoin", "Bitcoin (BTC)", ["Bitcoin"]),
+    ("ethereum", "Ethereum (ETH)", ["Ethereum"]),
+    ("tether", "Tether (USDT)", ["Ethereum (ERC-20)", "TRON (TRC-20)", "BNB Smart Chain (BEP-20)", "Solana", "Polygon", "Avalanche C-Chain", "Arbitrum", "Optimism"]),
+    ("usdc", "USD Coin (USDC)", ["Ethereum (ERC-20)", "Solana", "Base", "Arbitrum", "Optimism", "Polygon", "Avalanche C-Chain"]),
+    ("bnb", "BNB", ["BNB Smart Chain (BEP-20)", "BNB Beacon Chain"]),
+    ("solana", "Solana (SOL)", ["Solana"]),
+    ("xrp", "XRP", ["XRP Ledger"]),
+    ("cardano", "Cardano (ADA)", ["Cardano"]),
+    ("dogecoin", "Dogecoin (DOGE)", ["Dogecoin"]),
+    ("tron", "TRON (TRX)", ["TRON"]),
+    ("polkadot", "Polkadot (DOT)", ["Polkadot"]),
+    ("avalanche", "Avalanche (AVAX)", ["Avalanche C-Chain", "Avalanche P-Chain"]),
+    ("chainlink", "Chainlink (LINK)", ["Ethereum (ERC-20)", "BNB Smart Chain (BEP-20)", "Polygon", "Arbitrum", "Optimism"]),
+    ("polygon", "Polygon (POL)", ["Polygon", "Ethereum (ERC-20)"]),
+    ("litecoin", "Litecoin (LTC)", ["Litecoin"]),
+    ("bitcoin_cash", "Bitcoin Cash (BCH)", ["Bitcoin Cash"]),
+    ("stellar", "Stellar (XLM)", ["Stellar"]),
+    ("monero", "Monero (XMR)", ["Monero"]),
+    ("toncoin", "Toncoin (TON)", ["TON"]),
+    ("shiba_inu", "Shiba Inu (SHIB)", ["Ethereum (ERC-20)", "Shibarium"]),
+]
+
 
 class LumaApi:
     @staticmethod

@@ -68,11 +68,11 @@ sudo dnf install store -y --refresh
 
 ## Native Developer Dashboard
 
-The Developer Dashboard uses Supabase OAuth with PKCE. OAuth consent opens in the system browser and returns to the running GTK app through:
+The Developer Dashboard uses `supabase-py` with Supabase OAuth and PKCE. OAuth consent opens in the system browser and returns to the running GTK app through:
 
 `http://127.0.0.1:8765/auth/callback`
 
-That callback must be present in the Luma Store Supabase project's allowed redirect URLs. The resulting session is stored locally at `~/.config/luma-store/session.json` with user-only file permissions.
+That callback must be present in the Luma Store Supabase project's allowed redirect URLs. The `supabase-py` auth client persists and refreshes the session through a small file-backed storage adapter at `~/.config/luma-store/session.json` with user-only file permissions.
 
 No WebView is used.
 
@@ -82,6 +82,7 @@ If you want to build Luma Store Linux from source, ensure you have the following
 * `python3`
 * `gtk3`
 * `pygobject`
+* `supabase==2.31.0`
 <br>
 <br>
 

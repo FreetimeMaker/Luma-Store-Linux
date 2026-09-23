@@ -10,7 +10,8 @@ import webbrowser
 from pathlib import Path
 
 import gi
-from supabase import ClientOptions, create_client
+from supabase import create_client
+from supabase.client import ClientOptions
 
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gtk, Gio, GLib, Gdk, GdkPixbuf
@@ -206,7 +207,7 @@ h1{{margin-top:0}}p{{color:#b9c3d5;line-height:1.6}}</style></head><body><main><
             server.server_close()
             raise RuntimeError("Supabase did not return an OAuth URL.")
 
-        if not webbrowser.open(auth_url):
+        if not webbrowser.open(str(auth_url)):
             server.server_close()
             raise RuntimeError("Could not open the system browser.")
 

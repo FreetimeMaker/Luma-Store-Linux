@@ -1,20 +1,16 @@
 #!/usr/bin/env python3
-import base64
-import hashlib
 import http.server
 import json
 import os
 import re
-import secrets
 import threading
-import time
-import urllib.error
 import urllib.parse
 import urllib.request
 import webbrowser
 from pathlib import Path
 
 import gi
+from supabase import ClientOptions, create_client
 
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gtk, Gio, GLib, Gdk, GdkPixbuf
@@ -49,124 +45,121 @@ class LumaApi:
         return cls._get(f"/apps/{urllib.parse.quote(str(app_id), safe='')}", {"platform": PLATFORM})
 
 
-class NativeSupabaseAuth:
-    """Small native Supabase OAuth/PKCE client.
+class FileSupabaseStorage:
+    """Simple file-backed storage adapter for supabase-py sessions."""
 
-    OAuth consent happens in the user's default browser. The resulting session
-    is returned to the GTK application through a localhost callback, so no
-    WebView is required.
-    """
+    def __init__(self, path):
+        self.path = path
+        self._lock = threading.Lock()
+
+    def _read(self):
+        try:
+            if not self.path.exists():
+                return {}
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
+    def _write(self, data):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(data), encoding="utf-8")
+        try:
+            os.chmod(temporary, 0o600)
+        except OSError:
+            pass
+        temporary.replace(self.path)
+        try:
+            os.chmod(self.path, 0o600)
+        except OSError:
+            pass
+
+    def get_item(self, key):
+        with self._lock:
+            return self._read().get(key)
+
+    def set_item(self, key, value):
+        with self._lock:
+            data = self._read()
+            data[key] = value
+            self._write(data)
+
+    def remove_item(self, key):
+        with self._lock:
+            data = self._read()
+            data.pop(key, None)
+            if data:
+                self._write(data)
+            else:
+                try:
+                    self.path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+
+
+class NativeSupabaseAuth:
+    """Native Supabase authentication backed by supabase-py."""
 
     def __init__(self):
-        self.session = self._load_session()
+        self.client = create_client(
+            SUPABASE_URL,
+            SUPABASE_PUBLISHABLE_KEY,
+            options=ClientOptions(
+                flow_type="pkce",
+                persist_session=True,
+                auto_refresh_token=True,
+                storage=FileSupabaseStorage(SESSION_FILE),
+            ),
+        )
 
     @staticmethod
-    def _json_request(url, method="GET", payload=None, headers=None, timeout=30):
-        request_headers = {
-            "Accept": "application/json",
-            "User-Agent": "Luma-Store-Linux/1.1",
-            **(headers or {}),
-        }
-        data = None
-        if payload is not None:
-            data = json.dumps(payload).encode("utf-8")
-            request_headers["Content-Type"] = "application/json"
-        request = urllib.request.Request(url, data=data, headers=request_headers, method=method)
-        try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
-                raw = response.read().decode("utf-8")
-                return json.loads(raw) if raw else {}
-        except urllib.error.HTTPError as error:
-            message = error.read().decode("utf-8", errors="replace")
-            try:
-                body = json.loads(message)
-                detail = body.get("msg") or body.get("error_description") or body.get("message") or body.get("error")
-            except Exception:
-                detail = message
-            raise RuntimeError(detail or f"HTTP {error.code}") from error
-
-    @staticmethod
-    def _load_session():
-        try:
-            if not SESSION_FILE.exists():
-                return None
-            return json.loads(SESSION_FILE.read_text(encoding="utf-8"))
-        except Exception:
+    def _as_dict(value):
+        if value is None:
             return None
+        if isinstance(value, dict):
+            return value
+        if hasattr(value, "model_dump"):
+            return value.model_dump()
+        if hasattr(value, "dict"):
+            return value.dict()
+        return {
+            key: getattr(value, key)
+            for key in dir(value)
+            if not key.startswith("_") and not callable(getattr(value, key, None))
+        }
 
-    def _save_session(self):
-        if not self.session:
+    def sign_out(self):
+        try:
+            self.client.auth.sign_out()
+        finally:
             try:
                 SESSION_FILE.unlink(missing_ok=True)
             except Exception:
                 pass
-            return
-        SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
-        SESSION_FILE.write_text(json.dumps(self.session), encoding="utf-8")
+
+    def session(self):
         try:
-            os.chmod(SESSION_FILE, 0o600)
-        except OSError:
-            pass
-
-    def sign_out(self):
-        self.session = None
-        self._save_session()
-
-    def _refresh(self):
-        if not self.session or not self.session.get("refresh_token"):
-            return False
-        previous_provider_token = self.session.get("provider_token")
-        previous_provider = self.session.get("provider")
-        refreshed = self._json_request(
-            f"{SUPABASE_URL}/auth/v1/token?grant_type=refresh_token",
-            method="POST",
-            payload={"refresh_token": self.session["refresh_token"]},
-            headers={"apikey": SUPABASE_PUBLISHABLE_KEY},
-        )
-        if previous_provider_token and not refreshed.get("provider_token"):
-            refreshed["provider_token"] = previous_provider_token
-        if previous_provider and not refreshed.get("provider"):
-            refreshed["provider"] = previous_provider
-        refreshed["expires_at"] = time.time() + int(refreshed.get("expires_in") or 3600)
-        self.session = refreshed
-        self._save_session()
-        return True
+            return self.client.auth.get_session()
+        except Exception:
+            return None
 
     def access_token(self):
-        if not self.session:
-            return None
-        expires_at = float(self.session.get("expires_at") or 0)
-        if expires_at and expires_at < time.time() + 60:
-            try:
-                self._refresh()
-            except Exception:
-                self.sign_out()
-                return None
-        return self.session.get("access_token")
+        session = self.session()
+        return getattr(session, "access_token", None) if session else None
 
     def user(self):
-        token = self.access_token()
-        if not token:
+        if not self.access_token():
             return None
-        if isinstance(self.session.get("user"), dict):
-            return self.session["user"]
-        user = self._json_request(
-            f"{SUPABASE_URL}/auth/v1/user",
-            headers={
-                "apikey": SUPABASE_PUBLISHABLE_KEY,
-                "Authorization": f"Bearer {token}",
-            },
-        )
-        self.session["user"] = user
-        self._save_session()
-        return user
+        response = self.client.auth.get_user()
+        return self._as_dict(getattr(response, "user", None))
+
+    def provider(self):
+        user = self.user() or {}
+        metadata = user.get("app_metadata") or {}
+        return metadata.get("provider") or "OAuth"
 
     def login(self, provider):
-        verifier = secrets.token_urlsafe(64)
-        challenge = base64.urlsafe_b64encode(
-            hashlib.sha256(verifier.encode("utf-8")).digest()
-        ).decode("ascii").rstrip("=")
-
         result = {"code": None, "error": None}
 
         class CallbackHandler(http.server.BaseHTTPRequestHandler):
@@ -177,7 +170,11 @@ class NativeSupabaseAuth:
                 result["error"] = query.get("error_description", query.get("error", [None]))[0]
                 ok = bool(result["code"]) and not result["error"]
                 title = "Luma Store login complete" if ok else "Luma Store login failed"
-                message = "You can close this tab and return to Luma Store." if ok else (result["error"] or "No authorization code was returned.")
+                message = (
+                    "You can close this tab and return to Luma Store."
+                    if ok
+                    else (result["error"] or "No authorization code was returned.")
+                )
                 html = f"""<!doctype html><html><head><meta charset="utf-8"><title>{title}</title>
 <style>body{{font-family:system-ui;background:#09111f;color:#eef2ff;display:grid;place-items:center;min-height:100vh;margin:0}}
 main{{max-width:520px;padding:32px;border:1px solid #ffffff22;border-radius:28px;background:#ffffff10;box-shadow:0 20px 60px #0008}}
@@ -195,15 +192,19 @@ h1{{margin-top:0}}p{{color:#b9c3d5;line-height:1.6}}</style></head><body><main><
         server = http.server.HTTPServer(("127.0.0.1", 8765), CallbackHandler)
         server.timeout = 180
         callback = f"http://127.0.0.1:{server.server_port}/auth/callback"
-        params = {
-            "provider": provider,
-            "redirect_to": callback,
-            "code_challenge": challenge,
-            "code_challenge_method": "s256",
-        }
+
+        options = {"redirect_to": callback}
         if provider == "github":
-            params["scopes"] = "read:user public_repo"
-        auth_url = f"{SUPABASE_URL}/auth/v1/authorize?{urllib.parse.urlencode(params)}"
+            options["scopes"] = "read:user public_repo"
+
+        oauth = self.client.auth.sign_in_with_oauth({
+            "provider": provider,
+            "options": options,
+        })
+        auth_url = getattr(oauth, "url", None)
+        if not auth_url:
+            server.server_close()
+            raise RuntimeError("Supabase did not return an OAuth URL.")
 
         if not webbrowser.open(auth_url):
             server.server_close()
@@ -217,17 +218,9 @@ h1{{margin-top:0}}p{{color:#b9c3d5;line-height:1.6}}</style></head><body><main><
         if not result["code"]:
             raise RuntimeError("Login timed out or no authorization code was returned.")
 
-        token = self._json_request(
-            f"{SUPABASE_URL}/auth/v1/token?grant_type=pkce",
-            method="POST",
-            payload={"auth_code": result["code"], "code_verifier": verifier},
-            headers={"apikey": SUPABASE_PUBLISHABLE_KEY},
-        )
-        token["expires_at"] = time.time() + int(token.get("expires_in") or 3600)
-        token["provider"] = provider
-        self.session = token
-        self._save_session()
-        return token
+        return self.client.auth.exchange_code_for_session({
+            "auth_code": result["code"],
+        })
 
 
 class DeveloperDashboardApi:
@@ -235,27 +228,23 @@ class DeveloperDashboardApi:
         self.auth = auth
 
     def submissions(self):
-        token = self.auth.access_token()
         user = self.auth.user()
-        if not token or not user or not user.get("id"):
+        if not user or not user.get("id"):
             raise RuntimeError("Sign in to load your developer dashboard.")
+
         columns = (
             "id,name,short_description,description,status,submitted_at,status_updated_at,"
             "category,version,platform,linux_package_base,store_app_id,review_message,repo_url,"
             "download_url,package_name"
         )
-        query = urllib.parse.urlencode({
-            "select": columns,
-            "user_id": f"eq.{user['id']}",
-            "order": "submitted_at.desc",
-        })
-        return NativeSupabaseAuth._json_request(
-            f"{SUPABASE_URL}/rest/v1/luma_submissions?{query}",
-            headers={
-                "apikey": SUPABASE_PUBLISHABLE_KEY,
-                "Authorization": f"Bearer {token}",
-            },
+        response = (
+            self.auth.client.table("luma_submissions")
+            .select(columns)
+            .eq("user_id", user["id"])
+            .order("submitted_at", desc=True)
+            .execute()
         )
+        return response.data or []
 
 
 class LumaStoreWindow(Gtk.ApplicationWindow):
@@ -591,7 +580,7 @@ class LumaStoreWindow(Gtk.ApplicationWindow):
                 or user.get("email")
                 or "Developer"
             )
-            provider = (self.auth.session or {}).get("provider") or "OAuth"
+            provider = self.auth.provider()
             self.dashboard_auth_status.set_text(f"Signed in as {display_name} via {provider.title()}.")
             self.dashboard_login_buttons.hide()
             self.dashboard_session_actions.show()

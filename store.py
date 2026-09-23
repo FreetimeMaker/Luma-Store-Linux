@@ -3,12 +3,17 @@ import http.server
 import json
 import os
 import re
+import sys
 import threading
 import urllib.error
 import urllib.parse
 import urllib.request
 import webbrowser
 from pathlib import Path
+
+VENDOR_DIR = Path("/usr/lib/luma-store/vendor")
+if VENDOR_DIR.is_dir():
+    sys.path.insert(0, str(VENDOR_DIR))
 
 import gi
 from supabase import create_client

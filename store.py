@@ -9,7 +9,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import webbrowser
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 VENDOR_DIR = Path("/usr/lib/luma-store/vendor")
@@ -1153,6 +1153,814 @@ class LumaStoreWindow(Gtk.ApplicationWindow):
         """)
         Gtk.StyleContext.add_provider_for_screen(self.get_screen(), css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
         self.load_apps()
+
+    def _make_dashboard_aux_page(self, title, subtitle):
+        scrolled = Gtk.ScrolledWindow()
+        scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        content = self.page_box()
+        scrolled.add(content)
+
+        back = Gtk.Button(label="← Developer Dashboard")
+        back.set_halign(Gtk.Align.START)
+        back.connect("clicked", lambda _b: self.open_dashboard())
+        content.pack_start(back, False, False, 0)
+        content.pack_start(self.heading(title), False, False, 0)
+        description = Gtk.Label(label=subtitle, xalign=0, wrap=True)
+        description.get_style_context().add_class("muted")
+        content.pack_start(description, False, False, 0)
+        return scrolled, content
+
+    def _build_dashboard_aux_pages(self):
+        # Analytics
+        self.analytics_page, analytics = self._make_dashboard_aux_page(
+            "Analytics",
+            "Private download analytics for your published apps and funding links.",
+        )
+        filters = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.analytics_days = Gtk.ComboBoxText()
+        for value in ("7", "30", "90"):
+            self.analytics_days.append(value, f"Last {value} days")
+        self.analytics_days.set_active_id("30")
+        self.analytics_app_filter = Gtk.ComboBoxText()
+        self.analytics_app_filter.append("all", "All apps")
+        self.analytics_app_filter.set_active_id("all")
+        self.analytics_platform_filter = Gtk.ComboBoxText()
+        self.analytics_platform_filter.append("all", "All platforms")
+        self.analytics_platform_filter.set_active_id("all")
+        for combo in (self.analytics_days, self.analytics_app_filter, self.analytics_platform_filter):
+            combo.connect("changed", lambda _c: self._render_analytics_from_filters())
+            filters.pack_start(combo, False, False, 0)
+        refresh = Gtk.Button(label="Refresh")
+        refresh.connect("clicked", lambda _b: self.open_dashboard_analytics())
+        filters.pack_start(refresh, False, False, 0)
+        analytics.pack_start(filters, False, False, 0)
+        self.analytics_summary = Gtk.Label(label="Analytics not loaded.", xalign=0, wrap=True)
+        self.analytics_summary.get_style_context().add_class("dashboard-stats")
+        analytics.pack_start(self.analytics_summary, False, False, 0)
+        self.analytics_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        analytics.pack_start(self.analytics_box, False, False, 0)
+        self.analytics_data = None
+
+        # Developer profile
+        self.profile_page, profile = self._make_dashboard_aux_page(
+            "Developer profile",
+            "Public developer information shown on your Luma Store developer page.",
+        )
+        self.profile_status = Gtk.Label(xalign=0, wrap=True)
+        profile.pack_start(self.profile_status, False, False, 0)
+        self.profile_fields = {}
+        profile_grid = Gtk.Grid(column_spacing=12, row_spacing=10)
+        profile_grid.get_style_context().add_class("glass-card")
+        profile_grid.set_border_width(14)
+        for row, (key, title) in enumerate((
+            ("display_name", "Display name"),
+            ("avatar_url", "Avatar URL"),
+            ("website_url", "Website"),
+            ("github_url", "GitHub"),
+            ("gitlab_url", "GitLab"),
+        )):
+            label = Gtk.Label(label=title, xalign=0)
+            entry = Gtk.Entry()
+            entry.set_hexpand(True)
+            profile_grid.attach(label, 0, row, 1, 1)
+            profile_grid.attach(entry, 1, row, 1, 1)
+            self.profile_fields[key] = entry
+        bio_label = Gtk.Label(label="Bio", xalign=0)
+        bio_label.set_valign(Gtk.Align.START)
+        self.profile_bio = Gtk.TextView()
+        self.profile_bio.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        bio_scroller = Gtk.ScrolledWindow()
+        bio_scroller.set_min_content_height(120)
+        bio_scroller.add(self.profile_bio)
+        profile_grid.attach(bio_label, 0, 5, 1, 1)
+        profile_grid.attach(bio_scroller, 1, 5, 1, 1)
+        profile.pack_start(profile_grid, False, False, 0)
+        save_profile = Gtk.Button(label="Save profile")
+        save_profile.get_style_context().add_class("glass-primary")
+        save_profile.set_halign(Gtk.Align.END)
+        save_profile.connect("clicked", self.save_dashboard_profile)
+        profile.pack_start(save_profile, False, False, 0)
+
+        # Funding
+        self.funding_page, funding = self._make_dashboard_aux_page(
+            "Developer funding",
+            "Configure donation methods once; they apply to all of your published apps.",
+        )
+        self.funding_status = Gtk.Label(xalign=0, wrap=True)
+        funding.pack_start(self.funding_status, False, False, 0)
+        self.funding_fields = {}
+        funding_grid = Gtk.Grid(column_spacing=12, row_spacing=10)
+        funding_grid.get_style_context().add_class("glass-card")
+        funding_grid.set_border_width(14)
+        for row, (key, title) in enumerate((
+            ("donate_url", "Donation URL"),
+            ("liberapay", "Liberapay URL"),
+            ("opencollective", "OpenCollective URL"),
+        )):
+            label = Gtk.Label(label=title, xalign=0)
+            entry = Gtk.Entry()
+            entry.set_hexpand(True)
+            funding_grid.attach(label, 0, row, 1, 1)
+            funding_grid.attach(entry, 1, row, 1, 1)
+            self.funding_fields[key] = entry
+        funding.pack_start(funding_grid, False, False, 0)
+
+        crypto_title = Gtk.Label(label="Cryptocurrency wallet addresses", xalign=0)
+        crypto_title.get_style_context().add_class("section-title")
+        funding.pack_start(crypto_title, False, False, 0)
+        self.crypto_fields = {}
+        for currency, label_text, networks in CRYPTO_OPTIONS:
+            frame = Gtk.Frame(label=label_text)
+            grid = Gtk.Grid(column_spacing=10, row_spacing=8)
+            grid.set_border_width(10)
+            frame.add(grid)
+            for row, network in enumerate(networks):
+                key = f"{currency}::{network}"
+                label = Gtk.Label(label=network, xalign=0)
+                entry = Gtk.Entry()
+                entry.set_hexpand(True)
+                grid.attach(label, 0, row, 1, 1)
+                grid.attach(entry, 1, row, 1, 1)
+                self.crypto_fields[key] = entry
+            funding.pack_start(frame, False, False, 0)
+        save_funding = Gtk.Button(label="Save developer funding")
+        save_funding.get_style_context().add_class("glass-primary")
+        save_funding.set_halign(Gtk.Align.END)
+        save_funding.connect("clicked", self.save_dashboard_funding)
+        funding.pack_start(save_funding, False, False, 0)
+
+        # Status / timeline
+        self.status_page, status = self._make_dashboard_aux_page(
+            "Submission status",
+            "Follow scans, review messages, changelogs and publishing decisions for your apps.",
+        )
+        self.status_message = Gtk.Label(xalign=0, wrap=True)
+        status.pack_start(self.status_message, False, False, 0)
+        self.status_list = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        status.pack_start(self.status_list, False, False, 0)
+
+        # Notifications
+        self.notifications_page, notifications = self._make_dashboard_aux_page(
+            "Developer notifications",
+            "Status, review and feedback notifications for your submissions.",
+        )
+        self.notifications_message = Gtk.Label(xalign=0, wrap=True)
+        notifications.pack_start(self.notifications_message, False, False, 0)
+        self.notifications_list = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        notifications.pack_start(self.notifications_list, False, False, 0)
+
+        # Detailed app view
+        self.submission_details_page = self.page_box()
+        app_back = Gtk.Button(label="← Developer Dashboard")
+        app_back.set_halign(Gtk.Align.START)
+        app_back.connect("clicked", lambda _b: self.open_dashboard())
+        self.submission_details_page.pack_start(app_back, False, False, 0)
+        self.submission_details_title = self.heading("App details")
+        self.submission_details_page.pack_start(self.submission_details_title, False, False, 0)
+        self.submission_details_status = Gtk.Label(xalign=0, wrap=True)
+        self.submission_details_page.pack_start(self.submission_details_status, False, False, 0)
+        self.submission_actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.submission_edit_button = Gtk.Button(label="Edit app metadata")
+        self.submission_edit_button.get_style_context().add_class("glass-primary")
+        self.submission_remove_button = Gtk.Button(label="Delete / archive")
+        self.submission_actions.pack_start(self.submission_edit_button, False, False, 0)
+        self.submission_actions.pack_start(self.submission_remove_button, False, False, 0)
+        self.submission_details_page.pack_start(self.submission_actions, False, False, 0)
+
+        self.submission_notebook = Gtk.Notebook()
+        self.submission_notebook.set_scrollable(True)
+        self.submission_details_page.pack_start(self.submission_notebook, True, True, 0)
+
+        def detail_tab(title):
+            scrolled = Gtk.ScrolledWindow()
+            scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+            box.set_border_width(14)
+            scrolled.add(box)
+            self.submission_notebook.append_page(scrolled, Gtk.Label(label=title))
+            return box
+
+        self.submission_overview_box = detail_tab("Overview")
+        self.submission_timeline_box = detail_tab("Timeline")
+        self.submission_security_box = detail_tab("Security")
+        self.submission_versions_box = detail_tab("Versions")
+        self.submission_comments_box = detail_tab("Review comments")
+        self.submission_comment_entry = Gtk.Entry()
+        self.submission_comment_entry.set_placeholder_text("Add a review comment…")
+        self.submission_comment_button = Gtk.Button(label="Send comment")
+        comment_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        comment_row.pack_start(self.submission_comment_entry, True, True, 0)
+        comment_row.pack_start(self.submission_comment_button, False, False, 0)
+        self.submission_comments_box.pack_end(comment_row, False, False, 0)
+        self.current_submission_details = None
+
+    def open_dashboard_analytics(self):
+        self.show_page("dashboard_analytics")
+        if not self.auth.access_token():
+            self.analytics_summary.set_text("Sign in to view developer analytics.")
+            return
+        self.analytics_summary.set_text("Loading analytics…")
+        threading.Thread(target=self._analytics_worker, daemon=True).start()
+
+    def _analytics_worker(self):
+        try:
+            data = self.dashboard_api.analytics()
+            GLib.idle_add(self._analytics_loaded, data)
+        except Exception as error:
+            GLib.idle_add(self.analytics_summary.set_text, f"Analytics unavailable: {error}")
+
+    def _analytics_loaded(self, data):
+        self.analytics_data = data if isinstance(data, dict) else {}
+        current_app = self.analytics_app_filter.get_active_id() or "all"
+        current_platform = self.analytics_platform_filter.get_active_id() or "all"
+        self.analytics_app_filter.remove_all()
+        self.analytics_app_filter.append("all", "All apps")
+        for app in self.analytics_data.get("apps", []):
+            app_id = str(app.get("id") or "")
+            if app_id:
+                self.analytics_app_filter.append(app_id, app.get("name") or app.get("package_name") or "App")
+        self.analytics_app_filter.set_active_id(current_app if current_app else "all")
+
+        platforms = sorted({
+            str(row.get("platform"))
+            for row in (
+                list(self.analytics_data.get("platforms", []))
+                + list(self.analytics_data.get("daily", []))
+            )
+            if row.get("platform")
+        })
+        self.analytics_platform_filter.remove_all()
+        self.analytics_platform_filter.append("all", "All platforms")
+        for platform in platforms:
+            self.analytics_platform_filter.append(platform, platform)
+        self.analytics_platform_filter.set_active_id(current_platform if current_platform in platforms else "all")
+        self._render_analytics_from_filters()
+        return False
+
+    @staticmethod
+    def _metric_card(title, value, detail=None):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
+        box.set_border_width(12)
+        box.get_style_context().add_class("glass-card")
+        title_label = Gtk.Label(label=title, xalign=0)
+        title_label.get_style_context().add_class("muted")
+        value_label = Gtk.Label(label=str(value), xalign=0)
+        value_label.get_style_context().add_class("section-title")
+        box.pack_start(title_label, False, False, 0)
+        box.pack_start(value_label, False, False, 0)
+        if detail:
+            detail_label = Gtk.Label(label=str(detail), xalign=0, wrap=True)
+            detail_label.get_style_context().add_class("muted")
+            box.pack_start(detail_label, False, False, 0)
+        return box
+
+    def _render_analytics_from_filters(self):
+        data = self.analytics_data
+        if not data:
+            return
+        self.clear(self.analytics_box)
+        try:
+            days = int(self.analytics_days.get_active_id() or "30")
+        except ValueError:
+            days = 30
+        app_filter = self.analytics_app_filter.get_active_id() or "all"
+        platform_filter = self.analytics_platform_filter.get_active_id() or "all"
+        cutoff = datetime.now(timezone.utc).date() - timedelta(days=days - 1)
+
+        daily_map = {}
+        for row in data.get("daily", []):
+            if app_filter != "all" and str(row.get("app_id")) != app_filter:
+                continue
+            if platform_filter != "all" and str(row.get("platform")) != platform_filter:
+                continue
+            day = str(row.get("download_day") or "")[:10]
+            try:
+                day_date = datetime.fromisoformat(day).date()
+            except Exception:
+                continue
+            if day_date < cutoff:
+                continue
+            daily_map[day] = daily_map.get(day, 0) + int(row.get("downloads") or 0)
+
+        period_total = sum(daily_map.values())
+        total = int(data.get("total_downloads") or 0)
+        top = (data.get("apps") or [None])[0]
+        top_text = "—"
+        if top:
+            top_text = f"{top.get('name') or top.get('package_name') or 'App'} · {int(top.get('downloads') or 0):,}"
+        self.analytics_summary.set_text(
+            f"All-time downloads: {total:,}  •  Last {days} days: {period_total:,}  •  Top app: {top_text}"
+        )
+
+        daily_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        daily_card.set_border_width(12)
+        daily_card.get_style_context().add_class("glass-card")
+        daily_title = Gtk.Label(label=f"Downloads · last {days} days", xalign=0)
+        daily_title.get_style_context().add_class("section-title")
+        daily_card.pack_start(daily_title, False, False, 0)
+        max_daily = max([1] + list(daily_map.values()))
+        for offset in range(days):
+            day = cutoff + timedelta(days=offset)
+            key = day.isoformat()
+            value = daily_map.get(key, 0)
+            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            label = Gtk.Label(label=key, xalign=0)
+            label.set_size_request(95, -1)
+            bar = Gtk.ProgressBar()
+            bar.set_hexpand(True)
+            bar.set_fraction(value / max_daily if max_daily else 0)
+            bar.set_text(f"{value:,}")
+            bar.set_show_text(True)
+            row.pack_start(label, False, False, 0)
+            row.pack_start(bar, True, True, 0)
+            daily_card.pack_start(row, False, False, 0)
+        self.analytics_box.pack_start(daily_card, False, False, 0)
+
+        app_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        app_card.set_border_width(12)
+        app_card.get_style_context().add_class("glass-card")
+        app_card.pack_start(Gtk.Label(label="Downloads by app", xalign=0), False, False, 0)
+        for app in data.get("apps", []):
+            row = Gtk.Label(
+                label=f"{app.get('name') or app.get('package_name') or 'App'}  —  {int(app.get('downloads') or 0):,}",
+                xalign=0,
+            )
+            app_card.pack_start(row, False, False, 0)
+        self.analytics_box.pack_start(app_card, False, False, 0)
+
+        platform_rows = data.get("app_platforms", [])
+        if app_filter != "all":
+            platform_rows = [row for row in platform_rows if str(row.get("app_id")) == app_filter]
+        platform_totals = {}
+        for row in platform_rows:
+            platform = str(row.get("platform") or "Unknown")
+            platform_totals[platform] = platform_totals.get(platform, 0) + int(row.get("downloads") or 0)
+        platform_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        platform_card.set_border_width(12)
+        platform_card.get_style_context().add_class("glass-card")
+        platform_card.pack_start(Gtk.Label(label="Downloads by platform", xalign=0), False, False, 0)
+        for platform, value in sorted(platform_totals.items()):
+            platform_card.pack_start(Gtk.Label(label=f"{platform}  —  {value:,}", xalign=0), False, False, 0)
+        self.analytics_box.pack_start(platform_card, False, False, 0)
+
+        funding = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        funding.set_border_width(12)
+        funding.get_style_context().add_class("glass-card")
+        funding.pack_start(Gtk.Label(label="Funding link clicks", xalign=0), False, False, 0)
+        if data.get("funding"):
+            for row in data.get("funding", []):
+                funding.pack_start(
+                    Gtk.Label(label=f"{row.get('provider')}: {int(row.get('clicks') or 0):,}", xalign=0),
+                    False, False, 0,
+                )
+        else:
+            empty = Gtk.Label(label="No funding link clicks yet.", xalign=0)
+            empty.get_style_context().add_class("muted")
+            funding.pack_start(empty, False, False, 0)
+        self.analytics_box.pack_start(funding, False, False, 0)
+        self.analytics_box.show_all()
+
+    def open_dashboard_profile(self):
+        self.show_page("dashboard_profile")
+        self.profile_status.set_text("Loading developer profile…")
+        threading.Thread(target=self._profile_worker, daemon=True).start()
+
+    def _profile_worker(self):
+        try:
+            profile = self.dashboard_api.profile()
+            GLib.idle_add(self._profile_loaded, profile)
+        except Exception as error:
+            GLib.idle_add(self.profile_status.set_text, f"Could not load profile: {error}")
+
+    def _profile_loaded(self, profile):
+        for key, entry in self.profile_fields.items():
+            entry.set_text(str(profile.get(key) or ""))
+        self.profile_bio.get_buffer().set_text(str(profile.get("bio") or ""))
+        self.profile_status.set_text("Verified by Luma Store." if profile.get("verified") else "")
+        return False
+
+    def save_dashboard_profile(self, _button):
+        profile = {key: entry.get_text().strip() for key, entry in self.profile_fields.items()}
+        profile["bio"] = self._text_view_value(self.profile_bio)
+        self.profile_status.set_text("Saving profile…")
+        threading.Thread(target=self._save_profile_worker, args=(profile,), daemon=True).start()
+
+    def _save_profile_worker(self, profile):
+        try:
+            self.dashboard_api.save_profile(profile)
+            GLib.idle_add(self.profile_status.set_text, "Developer profile saved.")
+        except Exception as error:
+            GLib.idle_add(self.profile_status.set_text, f"Could not save profile: {error}")
+
+    def open_dashboard_funding(self):
+        self.show_page("dashboard_funding")
+        self.funding_status.set_text("Loading developer funding…")
+        threading.Thread(target=self._funding_worker, daemon=True).start()
+
+    def _funding_worker(self):
+        try:
+            funding = self.dashboard_api.funding()
+            GLib.idle_add(self._funding_loaded, funding)
+        except Exception as error:
+            GLib.idle_add(self.funding_status.set_text, f"Could not load funding: {error}")
+
+    def _funding_loaded(self, funding):
+        for key, entry in self.funding_fields.items():
+            entry.set_text(str(funding.get(key) or ""))
+        crypto = dict(funding.get("crypto_addresses") or {})
+        if funding.get("bitcoin") and "bitcoin::Bitcoin" not in crypto:
+            crypto["bitcoin::Bitcoin"] = funding["bitcoin"]
+        if funding.get("litecoin") and "litecoin::Litecoin" not in crypto:
+            crypto["litecoin::Litecoin"] = funding["litecoin"]
+        for key, entry in self.crypto_fields.items():
+            entry.set_text(str(crypto.get(key) or ""))
+        self.funding_status.set_text("")
+        return False
+
+    def save_dashboard_funding(self, _button):
+        payload = {key: entry.get_text().strip() for key, entry in self.funding_fields.items()}
+        payload["crypto_addresses"] = {
+            key: entry.get_text().strip()
+            for key, entry in self.crypto_fields.items()
+            if entry.get_text().strip()
+        }
+        self.funding_status.set_text("Saving developer funding…")
+        threading.Thread(target=self._save_funding_worker, args=(payload,), daemon=True).start()
+
+    def _save_funding_worker(self, payload):
+        try:
+            self.dashboard_api.save_funding(payload)
+            GLib.idle_add(
+                self.funding_status.set_text,
+                "Developer funding saved. These methods now apply to all your apps.",
+            )
+        except Exception as error:
+            GLib.idle_add(self.funding_status.set_text, f"Could not save funding: {error}")
+
+    def open_dashboard_status(self):
+        self.show_page("dashboard_status")
+        self.status_message.set_text("Loading submission history…")
+        threading.Thread(target=self._status_worker, daemon=True).start()
+
+    def _status_worker(self):
+        try:
+            data = self.dashboard_api.status_data()
+            GLib.idle_add(self._status_loaded, data)
+        except Exception as error:
+            GLib.idle_add(self.status_message.set_text, f"Could not load submission status: {error}")
+
+    def _status_loaded(self, data):
+        self.clear(self.status_list)
+        submissions = data.get("submissions", [])
+        history = data.get("history", [])
+        self.status_message.set_text(
+            f"{len(submissions)} submission(s)" if submissions else "You have not submitted an app yet."
+        )
+        for submission in submissions:
+            card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+            card.set_border_width(12)
+            card.get_style_context().add_class("glass-card")
+            title = Gtk.Label(
+                label=f"{submission.get('name') or 'App'}  ·  {submission.get('status') or 'Unknown'}",
+                xalign=0,
+            )
+            title.get_style_context().add_class("section-title")
+            card.pack_start(title, False, False, 0)
+            if submission.get("description"):
+                desc = Gtk.Label(label=str(submission["description"]), xalign=0, wrap=True)
+                desc.get_style_context().add_class("muted")
+                card.pack_start(desc, False, False, 0)
+            if submission.get("review_message"):
+                review = Gtk.Label(label=f"Latest status message: {submission['review_message']}", xalign=0, wrap=True)
+                card.pack_start(review, False, False, 0)
+            if submission.get("changelog"):
+                changelog = Gtk.Label(label=f"Changelog: {submission['changelog']}", xalign=0, wrap=True)
+                changelog.get_style_context().add_class("muted")
+                card.pack_start(changelog, False, False, 0)
+            events = [row for row in history if row.get("submission_id") == submission.get("id")]
+            for event in events:
+                event_label = Gtk.Label(
+                    label=f"• {event.get('status')} · {event.get('created_at')}"
+                          + (f" — {event.get('review_message')}" if event.get("review_message") else ""),
+                    xalign=0,
+                    wrap=True,
+                )
+                event_label.get_style_context().add_class("muted")
+                card.pack_start(event_label, False, False, 0)
+            button = Gtk.Button(label="Open app details")
+            button.set_halign(Gtk.Align.START)
+            button.connect("clicked", self.show_submission_details, submission)
+            card.pack_start(button, False, False, 0)
+            self.status_list.pack_start(card, False, False, 0)
+        self.status_list.show_all()
+        return False
+
+    def open_dashboard_notifications(self):
+        self.show_page("dashboard_notifications")
+        self.notifications_message.set_text("Loading notifications…")
+        threading.Thread(target=self._notifications_worker, daemon=True).start()
+
+    def _notifications_worker(self):
+        try:
+            rows = self.dashboard_api.notifications()
+            GLib.idle_add(self._notifications_loaded, rows)
+        except Exception as error:
+            GLib.idle_add(self.notifications_message.set_text, f"Could not load notifications: {error}")
+
+    def _notifications_loaded(self, rows):
+        self.clear(self.notifications_list)
+        unread = sum(1 for row in rows if not row.get("read_at"))
+        self.notifications_message.set_text(f"{len(rows)} notification(s) · {unread} unread")
+        for notification in rows:
+            card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
+            card.set_border_width(10)
+            card.get_style_context().add_class("glass-card")
+            title = notification.get("title") or notification.get("type") or "Notification"
+            card.pack_start(Gtk.Label(label=title, xalign=0, wrap=True), False, False, 0)
+            if notification.get("message"):
+                message = Gtk.Label(label=str(notification["message"]), xalign=0, wrap=True)
+                message.get_style_context().add_class("muted")
+                card.pack_start(message, False, False, 0)
+            meta = Gtk.Label(label=str(notification.get("created_at") or ""), xalign=0)
+            meta.get_style_context().add_class("muted")
+            card.pack_start(meta, False, False, 0)
+            if not notification.get("read_at"):
+                read = Gtk.Button(label="Mark as read")
+                read.set_halign(Gtk.Align.START)
+                read.connect("clicked", self.mark_notification_read, notification.get("id"))
+                card.pack_start(read, False, False, 0)
+            if notification.get("submission_id"):
+                open_button = Gtk.Button(label="Open app")
+                open_button.set_halign(Gtk.Align.START)
+                open_button.connect(
+                    "clicked",
+                    lambda _b, submission_id=notification.get("submission_id"): self.open_submission_by_id(submission_id),
+                )
+                card.pack_start(open_button, False, False, 0)
+            self.notifications_list.pack_start(card, False, False, 0)
+        self.notifications_list.show_all()
+        return False
+
+    def mark_notification_read(self, _button, notification_id):
+        if not notification_id:
+            return
+        threading.Thread(
+            target=self._mark_notification_worker,
+            args=(notification_id,),
+            daemon=True,
+        ).start()
+
+    def _mark_notification_worker(self, notification_id):
+        try:
+            self.dashboard_api.mark_notification_read(notification_id)
+        finally:
+            GLib.idle_add(self.open_dashboard_notifications)
+
+    def open_submission_by_id(self, submission_id):
+        if not submission_id:
+            return
+        self.show_page("dashboard_app")
+        self.submission_details_title.set_text("Loading app details…")
+        self.submission_details_status.set_text("")
+        threading.Thread(
+            target=self._submission_details_worker,
+            args=(submission_id,),
+            daemon=True,
+        ).start()
+
+    def _submission_details_worker(self, submission_id):
+        try:
+            data = self.dashboard_api.submission_details(submission_id)
+            GLib.idle_add(self._submission_details_loaded, data)
+        except Exception as error:
+            GLib.idle_add(self._submission_details_failed, str(error))
+
+    def _submission_details_failed(self, message):
+        self.submission_details_title.set_text("App details")
+        self.submission_details_status.set_text(f"Could not load app details: {message}")
+        return False
+
+    @staticmethod
+    def _json_text(value):
+        if value in (None, [], {}, ""):
+            return "—"
+        if isinstance(value, (dict, list)):
+            return json.dumps(value, indent=2, ensure_ascii=False)
+        return str(value)
+
+    def _submission_details_loaded(self, data):
+        self.current_submission_details = data
+        submission = data.get("submission") or {}
+        self.submission_details_title.set_text(submission.get("name") or "App details")
+        self.submission_details_status.set_text(
+            f"{submission.get('status') or 'Unknown'}"
+            + (f"  •  {submission.get('category')}" if submission.get("category") else "")
+            + (f"  •  Version {submission.get('version')}" if submission.get("version") else "")
+        )
+
+        for box in (
+            self.submission_overview_box,
+            self.submission_timeline_box,
+            self.submission_security_box,
+            self.submission_versions_box,
+        ):
+            self.clear(box)
+
+        def add_field(box, title, value):
+            if value in (None, "", [], {}):
+                return
+            label = Gtk.Label(xalign=0, wrap=True, selectable=True)
+            label.set_markup(f"<b>{GLib.markup_escape_text(str(title))}:</b> {GLib.markup_escape_text(self._json_text(value))}")
+            box.pack_start(label, False, False, 0)
+
+        for title, key in (
+            ("Status", "status"),
+            ("Short description", "short_description"),
+            ("Description", "description"),
+            ("Categories", "categories"),
+            ("License", "license_type"),
+            ("Version", "version"),
+            ("versionCode", "version_code"),
+            ("Package name", "package_name"),
+            ("Repository", "repo_url"),
+            ("Changelog", "changelog"),
+            ("Submitted", "submitted_at"),
+            ("Updated", "status_updated_at"),
+            ("Review message", "review_message"),
+        ):
+            add_field(self.submission_overview_box, title, submission.get(key))
+
+        stats = data.get("stats")
+        if stats:
+            add_field(
+                self.submission_overview_box,
+                "Downloads",
+                f"Total {stats.get('total', 0)} · Today {stats.get('today', 0)} · Month {stats.get('this_month', 0)} · Year {stats.get('this_year', 0)}",
+            )
+        for platform in data.get("published_platforms", []):
+            add_field(
+                self.submission_overview_box,
+                f"Published {platform.get('platform')} {platform.get('package_type') or ''}".strip(),
+                {
+                    "download_url": platform.get("download_url"),
+                    "file_size_mb": platform.get("file_size_mb"),
+                    "sha256": platform.get("sha256"),
+                    "artifact_verified_at": platform.get("artifact_verified_at"),
+                },
+            )
+        for artifact in submission.get("platforms") or []:
+            add_field(
+                self.submission_overview_box,
+                f"Submission platform {artifact.get('platform', '')} {artifact.get('packageType') or artifact.get('package_type') or ''}".strip(),
+                artifact,
+            )
+
+        history = data.get("history", [])
+        if history:
+            for event in history:
+                event_label = Gtk.Label(
+                    label=f"{event.get('status')} · {event.get('created_at')}"
+                          + (f"\n{event.get('review_message')}" if event.get("review_message") else ""),
+                    xalign=0,
+                    wrap=True,
+                )
+                event_label.set_border_width(8)
+                event_label.get_style_context().add_class("glass-card")
+                self.submission_timeline_box.pack_start(event_label, False, False, 0)
+        else:
+            self.submission_timeline_box.pack_start(
+                Gtk.Label(label="No timeline entries are available yet.", xalign=0),
+                False, False, 0,
+            )
+
+        scan = data.get("scan")
+        if scan:
+            for title, key in (
+                ("Status", "status"),
+                ("Risk level", "risk_level"),
+                ("Provider", "provider"),
+                ("Scanned", "scanned_at"),
+                ("File", "file_name"),
+                ("File size", "file_size_bytes"),
+                ("Malicious detections", "malicious_count"),
+                ("Suspicious detections", "suspicious_count"),
+                ("Harmless", "harmless_count"),
+                ("Undetected", "undetected_count"),
+                ("Findings", "findings"),
+                ("Permissions", "permissions"),
+                ("VirusTotal", "virus_total_permalink"),
+                ("Error", "error_message"),
+            ):
+                add_field(self.submission_security_box, title, scan.get(key))
+        else:
+            self.submission_security_box.pack_start(
+                Gtk.Label(label="No security scan is available yet.", xalign=0),
+                False, False, 0,
+            )
+
+        versions = data.get("versions", [])
+        if versions:
+            for version in versions:
+                card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+                card.set_border_width(10)
+                card.get_style_context().add_class("glass-card")
+                card.pack_start(
+                    Gtk.Label(
+                        label=f"{version.get('version') or 'Unknown version'}"
+                              + (f" ({version.get('version_code')})" if version.get("version_code") else "")
+                              + f" · {version.get('status') or ''}",
+                        xalign=0,
+                    ),
+                    False, False, 0,
+                )
+                if version.get("changelog"):
+                    change = Gtk.Label(label=str(version["changelog"]), xalign=0, wrap=True)
+                    change.get_style_context().add_class("muted")
+                    card.pack_start(change, False, False, 0)
+                if version.get("download_url"):
+                    url = Gtk.Label(label=str(version["download_url"]), xalign=0, selectable=True, wrap=True)
+                    card.pack_start(url, False, False, 0)
+                self.submission_versions_box.pack_start(card, False, False, 0)
+        else:
+            self.submission_versions_box.pack_start(
+                Gtk.Label(label="No version history is available for this submission.", xalign=0),
+                False, False, 0,
+            )
+
+        # Comments: preserve the input row at the bottom.
+        children = self.submission_comments_box.get_children()
+        input_row = children[-1] if children else None
+        for child in list(children):
+            if child is not input_row:
+                self.submission_comments_box.remove(child)
+        for comment in data.get("comments", []):
+            label = Gtk.Label(
+                label=f"{comment.get('created_at')}\n{comment.get('body')}",
+                xalign=0,
+                wrap=True,
+            )
+            label.set_border_width(8)
+            label.get_style_context().add_class("glass-card")
+            self.submission_comments_box.pack_start(label, False, False, 0)
+        if input_row:
+            self.submission_comments_box.reorder_child(input_row, -1)
+
+        try:
+            self.submission_edit_button.disconnect_by_func(self.edit_current_submission_metadata)
+        except Exception:
+            pass
+        try:
+            self.submission_remove_button.disconnect_by_func(self.remove_current_submission)
+        except Exception:
+            pass
+        try:
+            self.submission_comment_button.disconnect_by_func(self.add_current_review_comment)
+        except Exception:
+            pass
+        self.submission_edit_button.connect("clicked", self.edit_current_submission_metadata)
+        self.submission_remove_button.connect("clicked", self.remove_current_submission)
+        self.submission_comment_button.connect("clicked", self.add_current_review_comment)
+        self.submission_overview_box.show_all()
+        self.submission_timeline_box.show_all()
+        self.submission_security_box.show_all()
+        self.submission_versions_box.show_all()
+        self.submission_comments_box.show_all()
+        return False
+
+    def edit_current_submission_metadata(self, _button):
+        data = self.current_submission_details or {}
+        submission = data.get("submission")
+        if submission:
+            self.edit_submission_in_form(submission)
+
+    def add_current_review_comment(self, _button):
+        data = self.current_submission_details or {}
+        submission = data.get("submission") or {}
+        submission_id = submission.get("id")
+        body = self.submission_comment_entry.get_text().strip()
+        if not submission_id or not body:
+            return
+        self.submission_comment_button.set_sensitive(False)
+        threading.Thread(
+            target=self._add_review_comment_worker,
+            args=(submission_id, body),
+            daemon=True,
+        ).start()
+
+    def _add_review_comment_worker(self, submission_id, body):
+        try:
+            self.dashboard_api.add_review_comment(submission_id, body)
+            GLib.idle_add(self.submission_comment_entry.set_text, "")
+            GLib.idle_add(self.submission_comment_button.set_sensitive, True)
+            GLib.idle_add(self.open_submission_by_id, submission_id)
+        except Exception as error:
+            GLib.idle_add(self.submission_comment_button.set_sensitive, True)
+            GLib.idle_add(self.submission_details_status.set_text, f"Could not add comment: {error}")
+
+    def remove_current_submission(self, _button):
+        data = self.current_submission_details or {}
+        submission = data.get("submission") or {}
+        self.confirm_remove_submission(submission)
 
     @staticmethod
     def page_box():

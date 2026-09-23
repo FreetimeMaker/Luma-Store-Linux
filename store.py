@@ -8,6 +8,7 @@ import re
 import secrets
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import webbrowser
@@ -191,7 +192,7 @@ h1{{margin-top:0}}p{{color:#b9c3d5;line-height:1.6}}</style></head><body><main><
             def log_message(self, _format, *_args):
                 return
 
-        server = http.server.HTTPServer(("127.0.0.1", 0), CallbackHandler)
+        server = http.server.HTTPServer(("127.0.0.1", 8765), CallbackHandler)
         server.timeout = 180
         callback = f"http://127.0.0.1:{server.server_port}/auth/callback"
         params = {

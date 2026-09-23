@@ -1994,6 +1994,7 @@ class LumaStoreWindow(Gtk.ApplicationWindow):
             self.dashboard_session_actions.hide()
             self.dashboard_stats.set_text("Sign in to load your submissions.")
             self.submit_button.set_sensitive(False)
+            self.submit_draft_button.set_sensitive(False)
             self.clear(self.dashboard_list)
             self.dashboard_list.show_all()
             return
@@ -2013,6 +2014,7 @@ class LumaStoreWindow(Gtk.ApplicationWindow):
             self.dashboard_login_buttons.hide()
             self.dashboard_session_actions.show()
             self.submit_button.set_sensitive(bool(self.auth.provider_token()))
+            self.submit_draft_button.set_sensitive(True)
             if not self.auth.provider_token():
                 self.submit_status.set_text("Viewing works with this session, but app submission requires GitHub login.")
             else:
@@ -2022,6 +2024,7 @@ class LumaStoreWindow(Gtk.ApplicationWindow):
             self.dashboard_login_buttons.show()
             self.dashboard_session_actions.hide()
             self.submit_button.set_sensitive(False)
+            self.submit_draft_button.set_sensitive(False)
 
     def start_dashboard_login(self, _button, provider):
         self.dashboard_auth_status.set_text(
@@ -2635,41 +2638,32 @@ class LumaStoreWindow(Gtk.ApplicationWindow):
             review.get_style_context().add_class("status-pending")
             text.pack_start(review, False, False, 0)
 
+        actions = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         details = Gtk.Button(label="Details")
         details.connect("clicked", self.show_submission_details, submission)
+        actions.pack_start(details, False, False, 0)
+
+        if status_text in ("Draft", "Rejected", "Changes Requested", "Approved"):
+            edit = Gtk.Button(
+                label="Continue draft" if status_text == "Draft"
+                else "Submit update" if status_text == "Approved"
+                else "Edit / resubmit"
+            )
+            edit.connect("clicked", lambda _b, item=submission: self.edit_submission_in_form(item))
+            actions.pack_start(edit, False, False, 0)
+
+        if status_text in ("Draft", "Pending", "In Review", "Changes Requested", "Rejected", "Approved"):
+            remove = Gtk.Button(label="Archive" if status_text == "Approved" else "Delete")
+            remove.connect("clicked", lambda _b, item=submission: self.confirm_remove_submission(item))
+            actions.pack_start(remove, False, False, 0)
+
         box.pack_start(text, True, True, 0)
-        box.pack_end(details, False, False, 0)
+        box.pack_end(actions, False, False, 0)
         row.add(box)
         return row
 
     def show_submission_details(self, _button, submission):
-        lines = []
-        fields = [
-            ("Status", "status"),
-            ("Category", "category"),
-            ("Platform", "platform"),
-            ("Version", "version"),
-            ("Package", "package_name"),
-            ("Repository", "repo_url"),
-            ("Download", "download_url"),
-            ("Submitted", "submitted_at"),
-            ("Updated", "status_updated_at"),
-            ("Review message", "review_message"),
-        ]
-        for label, key in fields:
-            value = submission.get(key)
-            if value:
-                lines.append(f"{label}: {value}")
-        dialog = Gtk.MessageDialog(
-            transient_for=self,
-            modal=True,
-            message_type=Gtk.MessageType.INFO,
-            buttons=Gtk.ButtonsType.CLOSE,
-            text=submission.get("name") or "Submission details",
-        )
-        dialog.format_secondary_text("\n".join(lines) or "No additional information available.")
-        dialog.run()
-        dialog.destroy()
+        self.open_submission_by_id(submission.get("id"))
 
 
     @staticmethod

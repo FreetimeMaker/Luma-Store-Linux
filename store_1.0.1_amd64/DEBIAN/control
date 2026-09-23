@@ -4,4 +4,4 @@ Version: 1.0.1
 Architecture: amd64
 Maintainer: Freetime Maker <FreetimeMaker@proton.me>
 Description: The Linux Version of Luma Store.
-Depends: python3 (>= 3.6), python3-gi, gir1.2-gtk-3.0
+Depends: python3 (>= 3.9), python3-gi, gir1.2-gtk-3.0

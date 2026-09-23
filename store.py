@@ -834,6 +834,7 @@ class LumaStoreWindow(Gtk.ApplicationWindow):
         self.submit_editing_id = None
         self.submit_editing_status = None
         self.submit_existing_localized_metadata = []
+        self.submit_localizations = []
         self.submission_options_loaded = False
 
         def add_entry(row, key, title, placeholder=""):
@@ -944,7 +945,22 @@ class LumaStoreWindow(Gtk.ApplicationWindow):
         platform_metadata_expander.add(platform_metadata_box)
         submit_box.pack_start(platform_metadata_expander, False, False, 0)
 
+        localizations_expander = Gtk.Expander(label="Additional localized store metadata")
+        localization_content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        localization_content.set_border_width(10)
+        self.submit_localizations_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        localization_content.pack_start(self.submit_localizations_box, False, False, 0)
+        add_language = Gtk.Button(label="+ Add language")
+        add_language.set_halign(Gtk.Align.START)
+        add_language.connect("clicked", self.add_localization_form)
+        localization_content.pack_start(add_language, False, False, 0)
+        localizations_expander.add(localization_content)
+        submit_box.pack_start(localizations_expander, False, False, 0)
+
         submit_actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.fastlane_button = Gtk.Button(label="Load Android Fastlane metadata")
+        self.fastlane_button.connect("clicked", self.load_fastlane_metadata)
+        submit_actions.pack_start(self.fastlane_button, False, False, 0)
         self.submit_draft_button = Gtk.Button(label="Save draft")
         self.submit_draft_button.connect("clicked", self.save_submission_draft)
         self.submit_button = Gtk.Button(label="Submit app")
@@ -2208,12 +2224,83 @@ class LumaStoreWindow(Gtk.ApplicationWindow):
         for views in self.submit_platform_textviews.values():
             for view in views.values():
                 view.get_buffer().set_text("")
+        for localization in list(self.submit_localizations):
+            frame = localization.get("frame")
+            if frame is not None and frame.get_parent() is self.submit_localizations_box:
+                self.submit_localizations_box.remove(frame)
+        self.submit_localizations = []
         self.submit_draft_id = None
         self.submit_editing_id = None
         self.submit_editing_status = None
         self.submit_existing_localized_metadata = []
         self.submit_status.set_text("")
         self.submit_button.set_label("Submit app")
+
+    def add_localization_form(self, _button=None, metadata=None):
+        metadata = metadata if isinstance(metadata, dict) else {}
+        frame = Gtk.Frame(label=metadata.get("locale") or "Additional language")
+        grid = Gtk.Grid(column_spacing=10, row_spacing=8)
+        grid.set_border_width(10)
+        frame.add(grid)
+
+        locale = Gtk.Entry()
+        locale.set_placeholder_text("de-DE")
+        locale.set_text(str(metadata.get("locale") or ""))
+        title = Gtk.Entry()
+        title.set_text(str(metadata.get("title") or ""))
+        grid.attach(Gtk.Label(label="Locale", xalign=0), 0, 0, 1, 1)
+        grid.attach(locale, 1, 0, 1, 1)
+        grid.attach(Gtk.Label(label="Title", xalign=0), 0, 1, 1, 1)
+        grid.attach(title, 1, 1, 1, 1)
+
+        textviews = {}
+        for offset, (key, label_text, height, source_keys) in enumerate((
+            ("short_description", "Short description", 65, ("shortDescription", "short_description")),
+            ("description", "Full description", 95, ("fullDescription", "full_description")),
+            ("changelog", "Changelog", 75, ("changelog",)),
+            ("screenshots", "Screenshot URLs", 75, ("screenshots",)),
+        )):
+            label = Gtk.Label(label=label_text, xalign=0)
+            label.set_valign(Gtk.Align.START)
+            view = Gtk.TextView()
+            view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+            value = None
+            for source_key in source_keys:
+                if source_key in metadata:
+                    value = metadata.get(source_key)
+                    break
+            if key == "screenshots" and isinstance(value, list):
+                value = "\n".join(str(item) for item in value if item)
+            view.get_buffer().set_text(str(value or ""))
+            scroller = Gtk.ScrolledWindow()
+            scroller.set_min_content_height(height)
+            scroller.add(view)
+            grid.attach(label, 0, 2 + offset, 1, 1)
+            grid.attach(scroller, 1, 2 + offset, 1, 1)
+            textviews[key] = view
+
+        record = {
+            "frame": frame,
+            "locale": locale,
+            "title": title,
+            "textviews": textviews,
+        }
+        remove = Gtk.Button(label="Remove language")
+        remove.set_halign(Gtk.Align.START)
+        remove.connect("clicked", lambda _b, item=record: self.remove_localization_form(item))
+        grid.attach(remove, 1, 6, 1, 1)
+
+        self.submit_localizations.append(record)
+        self.submit_localizations_box.pack_start(frame, False, False, 0)
+        frame.show_all()
+        return record
+
+    def remove_localization_form(self, record):
+        if record in self.submit_localizations:
+            self.submit_localizations.remove(record)
+        frame = record.get("frame")
+        if frame is not None and frame.get_parent() is self.submit_localizations_box:
+            self.submit_localizations_box.remove(frame)
 
     def _selected_submit_platforms(self):
         return [
@@ -2333,6 +2420,12 @@ class LumaStoreWindow(Gtk.ApplicationWindow):
         )
         self.submit_separate_repos.set_active(separate)
         self.submit_existing_localized_metadata = list(submission.get("localized_metadata") or [])
+        for metadata in self.submit_existing_localized_metadata:
+            if not isinstance(metadata, dict):
+                continue
+            locale = str(metadata.get("locale") or "").lower()
+            if locale and locale != "en-us" and not locale.startswith("en"):
+                self.add_localization_form(metadata=metadata)
         self.submit_editing_id = submission.get("id")
         self.submit_editing_status = submission.get("status")
         self.submit_draft_id = submission.get("id") if submission.get("status") == "Draft" else None
@@ -2494,21 +2587,45 @@ class LumaStoreWindow(Gtk.ApplicationWindow):
             "changelog": texts["changelog"],
             "screenshots": screenshots,
         }
-        existing = list(getattr(self, "submit_existing_localized_metadata", []) or [])
-        localized = []
-        replaced_english = False
-        for item in existing:
-            if not isinstance(item, dict):
+        localized = [english]
+        locale_keys = {"en-us"}
+        for record in self.submit_localizations:
+            locale = record["locale"].get_text().strip()
+            title = record["title"].get_text().strip()
+            views = record["textviews"]
+            short_description = self._text_view_value(views["short_description"])
+            full_description = self._text_view_value(views["description"])
+            localized_changelog = self._text_view_value(views["changelog"])
+            localized_screenshots = [
+                value.strip()
+                for value in self._text_view_value(views["screenshots"]).splitlines()
+                if value.strip()
+            ]
+            has_any = any((
+                locale, title, short_description, full_description,
+                localized_changelog, localized_screenshots,
+            ))
+            if not has_any:
                 continue
-            locale = str(item.get("locale") or "")
-            if locale.lower() == "en-us" or locale.lower().startswith("en"):
-                if not replaced_english:
-                    localized.append(english)
-                    replaced_english = True
-            else:
-                localized.append(item)
-        if not replaced_english:
-            localized.insert(0, english)
+            if final and not all((
+                locale, title, short_description, full_description,
+                localized_changelog, localized_screenshots,
+            )):
+                raise RuntimeError(
+                    "Every additional language requires locale, title, descriptions, changelog and at least one screenshot."
+                )
+            locale_key = locale.lower()
+            if final and locale_key in locale_keys:
+                raise RuntimeError(f"Locale {locale} is duplicated.")
+            locale_keys.add(locale_key)
+            localized.append({
+                "locale": locale,
+                "title": title,
+                "shortDescription": short_description,
+                "fullDescription": full_description,
+                "changelog": localized_changelog,
+                "screenshots": localized_screenshots,
+            })
 
         version_code = int(fields["version_code"]) if fields["version_code"].isdigit() else None
         submission = {
@@ -2545,6 +2662,159 @@ class LumaStoreWindow(Gtk.ApplicationWindow):
             "review_message": None,
         }
         return submission
+
+    @staticmethod
+    def _github_repository_parts(project_url):
+        try:
+            parsed = urllib.parse.urlparse(str(project_url).strip())
+        except Exception as error:
+            raise RuntimeError("Please enter a valid GitHub repository URL.") from error
+        if parsed.scheme not in ("http", "https") or parsed.netloc.lower() != "github.com":
+            raise RuntimeError("Fastlane metadata requires a github.com repository URL.")
+        parts = [part for part in parsed.path.split("/") if part]
+        if len(parts) < 2:
+            raise RuntimeError("Please enter the URL of a GitHub repository.")
+        branch = parts[3] if len(parts) > 3 and parts[2] == "tree" else None
+        return parts[0], parts[1].removesuffix(".git"), [item for item in (branch, "main", "master") if item]
+
+    @staticmethod
+    def _fetch_text_url(url):
+        try:
+            request = urllib.request.Request(
+                url,
+                headers={"User-Agent": "Luma-Store-Linux/1.1"},
+            )
+            with urllib.request.urlopen(request, timeout=20) as response:
+                value = response.read().decode("utf-8").strip()
+                return value or None
+        except Exception:
+            return None
+
+    @staticmethod
+    def _fetch_fastlane_screenshots(owner, repo, branch, locale):
+        path = f"fastlane/metadata/android/{locale}/images/phoneScreenshots"
+        url = (
+            f"https://api.github.com/repos/{urllib.parse.quote(owner, safe='')}/"
+            f"{urllib.parse.quote(repo, safe='')}/contents/{path}"
+            f"?ref={urllib.parse.quote(branch, safe='')}"
+        )
+        try:
+            request = urllib.request.Request(
+                url,
+                headers={
+                    "Accept": "application/vnd.github+json",
+                    "User-Agent": "Luma-Store-Linux/1.1",
+                },
+            )
+            with urllib.request.urlopen(request, timeout=20) as response:
+                data = json.loads(response.read().decode("utf-8"))
+            if not isinstance(data, list):
+                return []
+            items = [
+                item for item in data
+                if isinstance(item, dict)
+                and item.get("type") == "file"
+                and re.search(r"\.(png|jpe?g)$", str(item.get("name") or ""), re.IGNORECASE)
+                and item.get("download_url")
+            ]
+            items.sort(key=lambda item: str(item.get("name") or ""))
+            return [str(item["download_url"]) for item in items]
+        except Exception:
+            return []
+
+    def load_fastlane_metadata(self, _button):
+        version_code = self.submit_fields["version_code"].get_text().strip()
+        if not version_code.isdigit() or int(version_code) <= 0:
+            self.submit_status.set_text(
+                "Enter a positive Android versionCode before checking Fastlane metadata."
+            )
+            return
+        repo_url = self.submit_fields["repo_url"].get_text().strip()
+        if self.submit_separate_repos.get_active():
+            repo_url = self.submit_platform_fields["Android"]["repo_url"].get_text().strip()
+        self.fastlane_button.set_sensitive(False)
+        self.submit_status.set_text("Loading Android Fastlane metadata…")
+        threading.Thread(
+            target=self._fastlane_metadata_worker,
+            args=(repo_url, int(version_code)),
+            daemon=True,
+        ).start()
+
+    def _fastlane_metadata_worker(self, repo_url, version_code):
+        try:
+            owner, repo, branches = self._github_repository_parts(repo_url)
+            for branch in dict.fromkeys(branches):
+                for locale in ("en-US", "en-GB", "de-DE", "en", "de"):
+                    base = (
+                        f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/"
+                        f"fastlane/metadata/android/{locale}"
+                    )
+                    title = self._fetch_text_url(f"{base}/title.txt")
+                    if not title:
+                        continue
+                    short_description = self._fetch_text_url(f"{base}/short_description.txt")
+                    full_description = self._fetch_text_url(f"{base}/full_description.txt")
+                    if not short_description or not full_description:
+                        continue
+                    changelog = (
+                        self._fetch_text_url(f"{base}/changelogs/{version_code}.txt")
+                        or self._fetch_text_url(f"{base}/changelogs/default.txt")
+                    )
+                    if not changelog:
+                        continue
+                    screenshots = self._fetch_fastlane_screenshots(
+                        owner, repo, branch, locale
+                    )
+                    if screenshots:
+                        GLib.idle_add(
+                            self._fastlane_metadata_loaded,
+                            {
+                                "title": title,
+                                "short_description": short_description,
+                                "description": full_description,
+                                "changelog": changelog,
+                                "screenshots": screenshots,
+                                "locale": locale,
+                                "branch": branch,
+                            },
+                        )
+                        return
+            raise RuntimeError(
+                "Fastlane metadata is incomplete. Luma Store requires title.txt, "
+                "short_description.txt, full_description.txt, a changelog for the "
+                "versionCode (or default.txt), and at least one phone screenshot."
+            )
+        except Exception as error:
+            GLib.idle_add(self._fastlane_metadata_failed, str(error))
+
+    def _fastlane_metadata_loaded(self, metadata):
+        self.fastlane_button.set_sensitive(True)
+        self.submit_fields["name"].set_text(metadata["title"])
+        self._set_text_view(
+            self.submit_textviews["short_description"],
+            metadata["short_description"],
+        )
+        self._set_text_view(
+            self.submit_textviews["description"],
+            metadata["description"],
+        )
+        self._set_text_view(
+            self.submit_textviews["changelog"],
+            metadata["changelog"],
+        )
+        self._set_text_view(
+            self.submit_textviews["screenshots"],
+            "\n".join(metadata["screenshots"]),
+        )
+        self.submit_status.set_text(
+            f"Fastlane metadata loaded from {metadata['branch']} · {metadata['locale']}."
+        )
+        return False
+
+    def _fastlane_metadata_failed(self, message):
+        self.fastlane_button.set_sensitive(True)
+        self.submit_status.set_text(f"Fastlane metadata could not be loaded: {message}")
+        return False
 
     def save_submission_draft(self, _button):
         if not self.auth.access_token():

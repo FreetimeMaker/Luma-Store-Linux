@@ -1,6 +1,6 @@
 .PHONY: install uninstall deb rpm
 
-package = store_1.0.1_amd64
+package = store_1.1.0_amd64
 runtime_requirements = runtime-requirements.txt
 vendor_path = /usr/lib/luma-store/vendor
 

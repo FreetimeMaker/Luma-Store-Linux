@@ -1,5 +1,5 @@
 Name:           store
-Version:        1.0.1
+Version:        1.1.0
 Release:        1%{?dist}
 Summary:        Luma Store Application
 License:        GPLv3

@@ -1,6 +1,6 @@
 Package: store
 Source: store
-Version: 1.0.1
+Version: 1.1.0
 Architecture: amd64
 Maintainer: Freetime Maker <FreetimeMaker@proton.me>
 Description: The Linux Version of Luma Store.
